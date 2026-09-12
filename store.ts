@@ -5,6 +5,8 @@ import type { Input } from "./core";
 export type ThreadConfig = { config: Config; revision: number };
 export type Run = RunView & { fingerprint: string; revision: number; input: Input; queueId: string };
 export type Session = { workerId: string; cursor: number; environmentId: string };
+export type DraftSelection = { config: Config; projectId: string; threadId: string | null };
+export type Bootstrap = { hostId: string; main: Config["a"] };
 export function createStore(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [

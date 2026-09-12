@@ -16,3 +16,5 @@ Advice is reference material. It does not override the user, project rules, or p
 A failed consultation leaves the message queued. Inspect its error and use `bb moa retry THREAD_ID RUN_ID` or turn MoA off. BB's explicit Send now overrides the wait; do not report it as a successful consultation. Disabling the plugin also releases its waits.
 
 The plugin keeps history but advisors see a bounded text window; do not assume they saw file or image contents. Advisor tool abstention is an instruction, not a universal sandbox guarantee.
+
+In a new-chat composer, enable MoA and choose the pair before sending. Keep its MoA mention chip in the draft; it binds configuration to that first message. Unchecking removes only that chip. Before the main workspace exists the advisor uses the project source on the resolved existing host (personal workspace only for an unfiled chat); normal native advisor-profile selection is available after provisioning.

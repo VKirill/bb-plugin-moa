@@ -32,3 +32,31 @@ Other providers, actual native-profile execution and compact-device interaction 
 The build printed an unrelated existing custom ACP configuration warning on the test host, while returning success and generating all bundles. This plugin does not alter ACP configuration.
 
 These checks establish a local beta, not marketplace acceptance or compatibility with future BB versions.
+
+## 0.1.0-beta.2 — first-message support
+
+Checked on 2026-09-13: TypeScript, 27 tests and build passed. Added coverage for
+new-composer selection with attachments preserved, binding configuration before
+first dispatch, another project/token-free draft isolation, retaining the worker
+after main provisioning, defaults without a project source, and disabling MoA
+when the first workspace is unavailable. Draft tokens are persisted and scoped
+to the receiving chat; a retried initial marker cannot re-enable a disabled mode.
+
+In a real browser, the new-chat checkbox opened the model-pair dialog and added
+its MoA mention to the draft. The first user request remained queued while the
+advisor ran; its private advice was present in the main model's first outbound
+request. The main model replied FIRST-READY. A user follow-up reused the same
+advisor and both answered COBALT. The checkbox remained enabled in the created
+chat. Browser computed styles confirmed a 12 px checkbox and 12 px label.
+
+The initial live attempt failed because BB permits personal workspaces only in
+the personal project. This was corrected to use the standard project's source
+on the actual submission host; the original queued first request then succeeded
+on explicit retry. These initial failures remain in the consultation history.
+No main turn was dispatched before successful consultation. Test chats were
+stopped and archived afterward.
+
+First-message native-profile execution and creating a new machine are outside
+this beta's verified scope. The first advisor uses a source checkout and text
+context, while the main agent keeps the user's requested workspace. No separate
+worktree is created just for the advisor.

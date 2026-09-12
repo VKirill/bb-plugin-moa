@@ -14,7 +14,7 @@ async function eventually(check: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 4000;
   while (!(await check())) { if (Date.now() > deadline) throw new Error("Condition not reached"); await new Promise(r => setTimeout(r, 15)); }
 }
-async function setup() {
+async function setup(configure = true) {
   const { bb, harness } = createFakePluginHost({ pluginId: "moa" });
   const parent = makeThreadResponse({ id: "parent", projectId: "project", environmentId: "env", providerId: "codex", status: "idle" });
   const worker = makeThreadResponse({ id: "worker", projectId: "project", environmentId: "env", providerId: "codex", originPluginId: "moa", status: "idle" });
@@ -24,6 +24,7 @@ async function setup() {
   let parentSeq = 10;
   let output: () => Promise<{ output: string }> = async () => ({ output: "Use the available evidence; verify the uncertain claim." });
   const stub = harness.inspection.sdk.stub;
+  stub("projects.get", async () => ({ id: "project", kind: "standard", sources: [{ hostId: "host", path: "/workspace", isDefault: true }] }));
   stub("threads.get", async ({ threadId }: { threadId: string }) => threadId === "parent" ? parent : worker);
   stub("environments.get", async () => ({ id: "env", hostId: "host", projectId: "project", path: "/workspace" }));
   stub("threads.defaultExecutionOptions", async () => ({ providerId: "codex", model: "a", reasoningLevel: "medium" }));
@@ -46,7 +47,7 @@ async function setup() {
   stub("providers.models", async () => ({ models: [a, b].map(s => ({ model: s.model, supportedReasoningEfforts: [{ reasoningEffort: "medium" }] })) }));
   plugin(bb);
   disposers.push(() => harness.lifecycle.dispose());
-  await harness.behavior.callRpc("save", { threadId: "parent", config });
+  if (configure) await harness.behavior.callRpc("save", { threadId: "parent", config });
   const hook = () => harness.inspection.registrations.hooks["message.dispatch"]!;
   const context = (input = entries[0]?.content ?? [text("Question one")]) => makeMessageDispatchHookContext({
     thread: parent, input: { blocks: input, text: "Question one" },
@@ -155,6 +156,67 @@ describe("delivery gate and durable consultations", () => {
     await new Promise(r => setTimeout(r, 1100));
     expect(f.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
     expect(await f.runs()).toHaveLength(1);
+  });
+  it("binds a draft before the first message and retains its advisor after provisioning", async () => {
+    const f = await setup(false);
+    f.parent.environmentId = null; f.parent.status = "pending";
+    const { token } = await f.harness.behavior.callRpc("prepareDraft", { projectId: "project", config }) as { token: string };
+    f.entries[0].content.push(text(`[bb-moa-draft:${token}]`));
+    const base = f.context();
+    const ctx = { ...base, project: { ...base.project, id: "project" }, host: { ...base.host!, id: "host" }, environment: null };
+    expect((await f.hook()(ctx)).action).toBe("wait");
+    f.start(); await eventually(() => f.entries[0].content.length === 3);
+    const spawn = f.harness.inspection.sdk.callsTo("threads.spawn")[0];
+    expect(JSON.stringify(spawn)).toContain('"type":"unmanaged"');
+    expect(JSON.stringify(spawn)).toContain('"path":"/workspace"');
+    expect((await f.hook()({ ...ctx, input: { ...ctx.input, blocks: f.entries[0].content } })).action).toBe("proceed");
+    const first = f.entries[0]; f.entries = [];
+    await f.harness.behavior.emitThreadEvent("message.dispatched", { entry: first });
+    f.parent.environmentId = "env"; f.parent.status = "idle"; f.advanceParent();
+    f.entries = [makeQueueEntry({ ...first, id: "q2", content: [text("Follow-up")], updatedAt: first.updatedAt + 1 })];
+    await eventually(() => f.entries[0].content.length === 2);
+    expect(f.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    expect(f.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+  });
+  it("loads a model pair for a new chat without a project source", async () => {
+    const f = await setup(false);
+    f.harness.inspection.sdk.stub("projects.get", async () => ({ id: "project", sources: [] }));
+    f.harness.inspection.sdk.stub("projects.defaultExecutionOptions", async () => null);
+    f.harness.inspection.sdk.stub("system.config", async () => ({ primaryHostId: "host" }));
+    f.harness.inspection.sdk.stub("providers.list", async () => [{ id: "codex", available: true }]);
+    const result = await f.harness.behavior.callRpc("draftDefaults", { projectId: "project" }) as { hostId: string; config: Config };
+    expect(result.hostId).toBe("host"); expect(result.config.enabled).toBe(false);
+    expect(result.config.a.model).toBe("a"); expect(result.config.b.model).toBe("b");
+  });
+  it("does not enable a new chat without its draft token", async () => {
+    const f = await setup(false); f.parent.environmentId = null;
+    await f.harness.behavior.callRpc("prepareDraft", { projectId: "project", config });
+    expect((await f.hook()(f.context())).action).toBe("proceed");
+  });
+  it("rejects a draft selection sent to another project", async () => {
+    const f = await setup(false);
+    const { token } = await f.harness.behavior.callRpc("prepareDraft", { projectId: "project", config }) as { token: string };
+    const ctx = f.context([text(`[bb-moa-draft:${token}]`)]);
+    expect((await f.hook()({ ...ctx, project: { ...ctx.project, id: "another" } })).action).toBe("reject");
+  });
+  it("does not re-enable MoA when the first message is retried after switching off", async () => {
+    const f = await setup(false);
+    const { token } = await f.harness.behavior.callRpc("prepareDraft", { projectId: "project", config }) as { token: string };
+    const base = f.context([text(`[bb-moa-draft:${token}]`)]);
+    const ctx = { ...base, project: { ...base.project, id: "project" }, host: { ...base.host!, id: "host" } };
+    expect((await f.hook()(ctx)).action).toBe("wait");
+    await f.harness.behavior.callRpc("toggle", { threadId: "parent", enabled: false });
+    expect((await f.hook()(ctx)).action).toBe("proceed");
+  });
+  it("can turn MoA off even if the first-message workspace is unavailable", async () => {
+    const f = await setup(false); f.parent.environmentId = null;
+    const { token } = await f.harness.behavior.callRpc("prepareDraft", { projectId: "project", config }) as { token: string };
+    const base = f.context([text(`[bb-moa-draft:${token}]`)]);
+    const ctx = { ...base, project: { ...base.project, id: "project" }, host: { ...base.host!, id: "host" } };
+    expect((await f.hook()(ctx)).action).toBe("wait");
+    f.harness.inspection.sdk.stub("projects.get", async () => ({ id: "project", kind: "standard", sources: [] }));
+    await f.harness.behavior.callRpc("toggle", { threadId: "parent", enabled: false });
+    expect((await f.hook()(ctx)).action).toBe("proceed");
   });
   it("uses only public SDK imports", async () => {
     const result = await experimental_scanPublicSdkOnly(process.cwd(), { allow: [

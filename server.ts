@@ -4,7 +4,7 @@ import { z } from "zod";
 import { configSchema, rpcContract, runSchema, type Slot } from "./contract";
 import { advisorFor, boundedContext, cleanInput, hash, referenceBlock, safeError, textOf, type Input } from "./core";
 import { ADVISOR_PROMPT } from "./prompts";
-import { createStore, type Run, type Session, type ThreadConfig } from "./store";
+import { createStore, type Run, type Session, type ThreadConfig, type DraftSelection, type Bootstrap } from "./store";
 
 type Queue = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
 const delay = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
@@ -29,14 +29,28 @@ export default function plugin(bb: BbPluginApi) {
   async function mainSlot(threadId: string): Promise<Slot> {
     const thread = await bb.sdk.threads.get({ threadId });
     const execution = await bb.sdk.threads.defaultExecutionOptions({ threadId });
-    if (!execution) throw new Error("Choose a model for this chat first.");
+    if (!execution) {
+      const boot = store.get<Bootstrap>(`bootstrap:${threadId}`);
+      if (boot) return boot.main;
+      throw new Error("Choose a model for this chat first.");
+    }
     return { providerId: thread.providerId, model: execution.model, reasoningLevel: execution.reasoningLevel, agentId: null };
   }
   async function routing(threadId: string) {
     const thread = await bb.sdk.threads.get({ threadId });
-    if (!thread.environmentId) throw new Error("The chat environment is not available yet.");
+    if (!thread.environmentId) {
+      const boot = store.get<Bootstrap>(`bootstrap:${threadId}`);
+      if (!boot) throw new Error("The chat environment is not available yet.");
+      const project = await bb.sdk.projects.get({ projectId: thread.projectId });
+      const source = project.sources.find(s => s.hostId === boot.hostId);
+      if (!source && project.kind !== "personal") throw new Error("A project workspace is not available on the selected machine.");
+      return { thread, environment: { id: `bootstrap:${boot.hostId}`, hostId: boot.hostId }, bootstrap: true,
+        spawnEnvironment: { type: "host" as const, hostId: boot.hostId, workspace: source
+          ? { type: "unmanaged" as const, path: source.path }
+          : { type: "personal" as const } } };
+    }
     const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
-    return { thread, environment };
+    return { thread, environment, bootstrap: false, spawnEnvironment: { type: "reuse" as const, environmentId: environment.id } };
   }
   function mainAt(ctx: MessageDispatchHookContext): Slot {
     return {
@@ -63,6 +77,23 @@ export default function plugin(bb: BbPluginApi) {
   // Admission only: enrichment happens after BB has durably queued the message.
   bb.experimental_hooks.on("message.dispatch", async ctx => {
     if (ctx.thread.originPluginId === bb.pluginId || ctx.originPluginId === bb.pluginId) return { action: "proceed" };
+    const tokens = [...new Set(ctx.input.blocks.flatMap(b => b.type === "text"
+      ? [...b.text.matchAll(/\[bb-moa-draft:([0-9a-f-]{36})\]/g)].map(m => m[1]) : []))];
+    if (tokens.length > 1) return { action: "reject", message: "Choose one MoA pair for this draft." };
+    if (tokens.length) {
+      const selection = store.get<DraftSelection>(`draft:${tokens[0]}`);
+      if (!selection || selection.projectId !== ctx.project.id || (selection.threadId && selection.threadId !== ctx.thread.id)) {
+        return { action: "reject", message: "This MoA selection belongs to another chat or project. Choose the pair again." };
+      }
+      if (!configured(ctx.thread.id)) {
+        if (!ctx.host) return { action: "reject", message: "Choose an existing machine before enabling MoA for the first message." };
+        selection.threadId = ctx.thread.id;
+        store.put(`draft:${tokens[0]}`, ctx.thread.id, "draft", selection);
+        store.put(`config:${ctx.thread.id}`, ctx.thread.id, "config", { config: selection.config, revision: 1 });
+        store.put(`bootstrap:${ctx.thread.id}`, ctx.thread.id, "bootstrap", { hostId: ctx.host.id, main: mainAt(ctx) });
+        changed(ctx.thread.id);
+      }
+    }
     const cfg = configured(ctx.thread.id);
     if (!cfg?.config.enabled) {
       if (cleanInput(ctx.input.blocks).length !== ctx.input.blocks.length && ctx.queuedMessage) {
@@ -87,7 +118,8 @@ export default function plugin(bb: BbPluginApi) {
 
   async function nativeAgent(slot: Slot, parentId: string): Promise<string> {
     if (!slot.agentId) return "";
-    const { thread, environment } = await routing(parentId);
+    const { thread, environment, bootstrap } = await routing(parentId);
+    if (bootstrap) throw new Error("Native advisor profiles are unavailable before the workspace is created.");
     const result = await bb.sdk.plugins.callRpc({ pluginId: "cli-agents", method: "select",
       input: { providerId: slot.providerId, hostId: environment.hostId, projectId: thread.projectId,
         environmentId: environment.id, agentId: slot.agentId },
@@ -99,21 +131,35 @@ export default function plugin(bb: BbPluginApi) {
   async function consult(run: Run, signal: AbortSignal) {
     let workerId: string | null = null;
     let baseline = 0;
+    let stage = "Preparing consultation";
     try {
       const cfg = configured(run.threadId)!;
-      const { thread, environment } = await routing(run.threadId);
+      const { thread, environment, bootstrap, spawnEnvironment } = await routing(run.threadId);
+      if (bootstrap) {
+        stage = "Checking advisor model";
+        const catalog = await bb.sdk.providers.models({ hostId: environment.hostId, providerId: run.advisor.providerId });
+        if (!catalog.models.some(m => m.model === run.advisor.model)) throw new Error("Advisor model is not available on the selected machine.");
+      }
       const sessionKey = `session:${run.threadId}:${hash({ slot: run.advisor, environment: environment.id, promptVersion: 1 })}`;
       let session = store.get<Session>(sessionKey);
+      if (!session && !bootstrap) {
+        // Keep the first advisor's history when BB later provisions the main workspace.
+        const coldKey = `session:${run.threadId}:${hash({ slot: run.advisor, environment: `bootstrap:${environment.hostId}`, promptVersion: 1 })}`;
+        session = store.get<Session>(coldKey);
+        if (session) { store.put(sessionKey, thread.id, "session", session); store.delete(coldKey); }
+      }
       if (session) {
         const worker = await bb.sdk.threads.get({ threadId: session.workerId }).catch(() => null);
         if (!worker || worker.deletedAt || worker.archivedAt) session = null;
       }
+      stage = "Reading conversation history";
       const timeline = await bb.sdk.threads.timeline({ threadId: run.threadId, segmentLimit: "50" });
       const rows = timeline.rows.filter(row => row.kind === "conversation" && row.sourceSeqEnd > (session?.cursor ?? 0));
       const history = boundedContext(rows.map(row => row.kind === "conversation" ? `${row.role}: ${row.text}` : "").join("\n\n"));
       const prompt = `${ADVISOR_PROMPT}\n\nCanonical conversation updates (may be a bounded recent window):\n${history || "No new completed messages."}\n\nCurrent user request:\n${boundedContext(textOf(run.input), 30000)}`;
       if (signal.aborted || shutdown.signal.aborted) return;
       run.status = "running"; saveRun(run);
+      stage = "Starting advisor session";
       if (session) {
         workerId = session.workerId;
         baseline = (await bb.sdk.threads.timeline({ threadId: workerId, segmentLimit: "5" })).maxSeq;
@@ -124,7 +170,7 @@ export default function plugin(bb: BbPluginApi) {
         const agentMarker = await nativeAgent(run.advisor, run.threadId);
         if (signal.aborted || shutdown.signal.aborted) return;
         const worker = await bb.sdk.threads.spawn({
-          projectId: thread.projectId, environment: { type: "reuse", environmentId: environment.id },
+          projectId: thread.projectId, environment: spawnEnvironment,
           providerId: run.advisor.providerId, model: run.advisor.model, reasoningLevel: run.advisor.reasoningLevel, serviceTier: run.advisor.serviceTier,
           permissionMode: "accept-edits", visibility: "hidden", title: `MoA advisor · ${run.advisor.model}`,
           // No parentThreadId: BB auto-notifies parents on child completion, which would
@@ -137,6 +183,7 @@ export default function plugin(bb: BbPluginApi) {
         store.put(sessionKey, thread.id, "session", session);
       }
       const started = Date.now();
+      stage = "Waiting for advisor";
       while (!signal.aborted && !shutdown.signal.aborted) {
         const worker = await bb.sdk.threads.get({ threadId: workerId });
         if (worker.status === "idle") {
@@ -165,7 +212,7 @@ export default function plugin(bb: BbPluginApi) {
       await recheck();
     } catch (error) {
       if (!shutdown.signal.aborted && !signal.aborted) {
-        run.status = "failed"; run.error = safeError(error); run.finishedAt = Date.now(); saveRun(run);
+        run.status = "failed"; run.error = `${stage}: ${safeError(error)}`; run.finishedAt = Date.now(); saveRun(run);
         bb.log.warn(`Consultation ${run.id} failed (${run.advisor.providerId}).`);
         await recheck().catch(() => {});
       }
@@ -221,11 +268,12 @@ export default function plugin(bb: BbPluginApi) {
   }
 
   async function saveConfig(threadId: string, value: unknown) {
-    const { environment } = await routing(threadId);
     const config = configSchema.parse(value); advisorFor(config, config.a);
+    const thread = await bb.sdk.threads.get({ threadId });
     if (config.enabled) {
+      const { environment, bootstrap } = await routing(threadId);
       for (const slot of [config.a, config.b]) {
-        const catalog = await bb.sdk.providers.models({ environmentId: environment.id, providerId: slot.providerId });
+        const catalog = await bb.sdk.providers.models({ ...(bootstrap ? { hostId: environment.hostId } : { environmentId: environment.id }), providerId: slot.providerId });
         const model = catalog.models.find(m => m.model === slot.model);
         if (!model) throw new Error(`Model is not available: ${slot.model}`);
         if (model.supportedReasoningEfforts.length && !model.supportedReasoningEfforts.some(e => e.reasoningEffort === slot.reasoningLevel)) {
@@ -236,6 +284,7 @@ export default function plugin(bb: BbPluginApi) {
     active.get(threadId)?.abort.abort();
     const old = configured(threadId);
     store.put(`config:${threadId}`, threadId, "config", { config, revision: (old?.revision ?? 0) + 1 });
+    store.put(`template:${thread.projectId}`, thread.projectId, "template", config);
     for (const entry of await queue(threadId)) await strip(entry).catch(() => {});
     changed(threadId); await recheck(); return config;
   }
@@ -251,6 +300,37 @@ export default function plugin(bb: BbPluginApi) {
     store.delete(`queue:${entry.id}`); changed(threadId); await recheck(); return { ok: true };
   }
   bb.rpc.register(rpcContract, {
+    draftDefaults: async ({ projectId }) => {
+      const project = await bb.sdk.projects.get({ projectId });
+      const defaults = await bb.sdk.projects.defaultExecutionOptions({ projectId });
+      const hostId = (project.sources.find(s => s.isDefault) ?? project.sources[0])?.hostId
+        ?? (await bb.sdk.system.config()).primaryHostId;
+      if (!hostId) throw new Error("Choose a project with an existing machine first.");
+      const saved = store.get<ReturnType<typeof configSchema.parse>>(`template:${projectId}`);
+      if (saved) return { hostId, config: { ...saved, enabled: false, a: { ...saved.a, agentId: null }, b: { ...saved.b, agentId: null } } };
+      const providerId = defaults?.providerId ?? (await bb.sdk.providers.list({ hostId })).find(p => p.available)?.id;
+      if (!providerId) throw new Error("No provider is available on this machine.");
+      const catalog = await bb.sdk.providers.models({ hostId, providerId });
+      const first = catalog.models.find(m => m.model === defaults?.model) ?? catalog.models[0];
+      if (!first) throw new Error("Choose a default provider and model for the project first.");
+      const second = catalog.models.find(m => m.model !== first.model) ?? first;
+      const slot = (m: typeof first): Slot => ({ providerId, model: m.model, reasoningLevel: m.defaultReasoningEffort, agentId: null });
+      return { hostId, config: { a: slot(first), b: slot(second), enabled: false, timeoutSeconds: 240 } };
+    },
+    prepareDraft: async ({ projectId, config }) => {
+      await bb.sdk.projects.get({ projectId });
+      advisorFor(config, config.a);
+      if (config.a.agentId || config.b.agentId) throw new Error("Choose native advisor profiles after the chat workspace is created.");
+      const token = randomUUID();
+      store.put(`draft:${token}`, projectId, "draft", { config: { ...config, enabled: true }, projectId, threadId: null });
+      store.put(`template:${projectId}`, projectId, "template", { ...config, enabled: false });
+      return { token };
+    },
+    readDraft: ({ token }) => {
+      const selection = store.get<DraftSelection>(`draft:${token}`);
+      if (!selection) throw new Error("Choose the MoA pair again.");
+      return selection.config;
+    },
     status: ({ threadId }) => status(threadId),
     save: ({ threadId, config }) => saveConfig(threadId, config),
     toggle: ({ threadId, enabled }) => {
@@ -277,6 +357,10 @@ export default function plugin(bb: BbPluginApi) {
       } catch { return { supported: false, agents: [], warnings: ["Native agents require the optional CLI Agents plugin and a supported provider."] }; }
     },
   });
+  bb.ui.registerMentionProvider({ id: "draft", label: "MoA", search: () => [], resolve: token => {
+    if (!store.get<DraftSelection>(`draft:${token}`)) throw new Error("Choose the MoA pair again.");
+    return { context: `[bb-moa-draft:${token}]\nMoA configuration attached to the initial request. The coordinator supplies any advisor reference separately.` };
+  } });
 
   bb.cli.register({ name: "moa", summary: "Configure per-chat Mixture of Agents and inspect consultations",
     commands: [

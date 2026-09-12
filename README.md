@@ -2,14 +2,14 @@
 
 Consult a second model before each message, then let your current chat agent act and answer. MoA adds a per-chat checkbox, a native model-pair picker, automatic advisor-role switching, and persistent consultation history.
 
-**Status:** 0.1.0-beta.1 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
+**Status:** 0.1.0-beta.2 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
 
 ## Use
 
-1. Open a chat with an attached environment.
+1. Open a new or existing chat.
 2. Click the settings button next to **MoA** in the composer.
 3. Choose two different provider/model combinations, A and B. BB's picker also selects reasoning and supported service tier.
-4. Save and enable MoA. Each normal submission waits for the advisor before the original request and private reference context reach your current agent.
+4. Save and enable MoA. In a new chat, a **MoA** chip is added to this draft; keep it with the first question. Each normal submission waits for the advisor before the original request and private reference context reach your current agent.
 5. Uncheck MoA to resume ordinary delivery. Re-enabling continues saved advisor history and supplies intervening conversation updates.
 
 If the current model matches B, A advises. Otherwise B advises. The current model remains the aggregator and keeps its native agent identity. Optional per-slot agent/profile selections apply when that slot serves as advisor and require the separate **CLI Agents** plugin.
@@ -40,7 +40,9 @@ Plugin state and consultation records use the plugin's SQLite database in BB-man
 - Original files, images and mentions are preserved for the main agent. Advisors get text and labelled attachment references; they do not automatically inspect file contents or image pixels.
 - Role switching compares exact provider/model IDs. Two profiles of the same model do not form a pair. Changing a slot's profile, effort or service tier creates its own advisory session.
 - CLI Agents is optional and provider-dependent. Live model routing/session reuse has been checked with Codex Luna/Sol; other providers need their own login and validation.
-- New-thread and side-chat composers do not opt in automatically. Configure MoA after a normal chat has an attached environment.
+- New chats can opt in before the first message. Selection belongs to the draft, not all tabs or future chats. Removing the MoA chip or unchecking MoA returns that draft to ordinary mode. Side-chat composers do not opt in.
+- Before the main workspace exists, the first advisor runs in the project checkout on the machine resolved from the actual submission (a personal workspace only for an unfiled chat). Its thread is retained after the main workspace is provisioned. This requires an existing host and a project source on that host. The main workspace selection is preserved, including a separately requested worktree.
+- The new-chat picker discovers models using the project's default machine (or BB primary machine for an unfiled chat); the advisor model is validated on the actual submission machine before launch. Native advisor profiles can be selected after the main workspace exists. The last saved pair is offered as a preset, with MoA off.
 
 ## Install from a checkout
 

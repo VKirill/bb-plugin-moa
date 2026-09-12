@@ -43,3 +43,24 @@ it("keeps MoA off and shows an error when enabling fails", async () => {
   await slot.findByRole("alert");
   expect(checkbox.getAttribute("aria-checked")).toBe("false");
 });
+it("offers MoA in a new chat and carries its selection with the draft", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  expect(app.composerCustomizations[0].scopes).toContain("new-thread");
+  const slot = renderSlot(app.composerCustomizations[0].actions![0], {}, {
+    composer: { scope: { kind: "new-thread", projectId: "project" }, text: "First question", attachmentCount: 1 },
+    rpc: {
+      draftDefaults: () => ({ hostId: "host", config }),
+      prepareDraft: () => ({ token: "11111111-1111-4111-8111-111111111111" }),
+    },
+  });
+  cleanups.push(() => slot.lifecycle.unmount());
+  fireEvent.click(await slot.findByRole("checkbox", { name: "MoA" }));
+  const enable = await slot.findByRole("button", { name: "Enable for this chat" });
+  fireEvent.click(enable);
+  await waitFor(() => expect(slot.inspection.composer.mentions).toContainEqual({
+    provider: "draft", id: "11111111-1111-4111-8111-111111111111", label: "MoA",
+  }));
+  expect(slot.inspection.composer.text).toContain("First question");
+  expect(slot.inspection.composer.attachmentCount).toBe(1);
+  expect(slot.inspection.composer.submits).toHaveLength(0);
+});

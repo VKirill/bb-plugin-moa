@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { NewChatMoA } from "./new-chat";
+import { observeDraft } from "./draft";
 
 const ru = typeof navigator !== "undefined" && navigator.languages.some(l => l.startsWith("ru"));
 const t = (en: string, russian: string) => ru ? russian : en;
@@ -159,10 +161,14 @@ export function MoAControl() {
   </div>;
 }
 export default definePluginApp(app => {
-  app.composer.customize({ id: "moa", scopes: ["thread"], actions: [{ id: "toggle", component: MoAControl }],
-    banners: [{ id: "compact-toggle", chrome: "bare", component: CompactControl }] });
+  app.composer.customize({ id: "moa", scopes: ["thread", "new-thread"], actions: [{ id: "toggle", component: ComposerMoA }],
+    banners: [{ id: "compact-toggle", chrome: "bare", component: CompactControl }], richText: { onDraftChange: observeDraft } });
 });
+function ComposerMoA() {
+  const view = useComposerView();
+  return view.scope.kind === "new-thread" ? <NewChatMoA /> : <MoAControl />;
+}
 function CompactControl() {
   const { layout } = useComposerView();
-  return layout === "compact" ? <MoAControl /> : null;
+  return layout === "compact" ? <ComposerMoA /> : null;
 }

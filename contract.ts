@@ -31,6 +31,18 @@ const agentCatalog = z.object({
   agents: z.array(z.object({ id: z.string(), description: z.string() })),
 });
 export const rpcContract = defineRpcContract({
+  draftDefaults: {
+    input: z.object({ projectId: z.string().min(1) }),
+    output: z.object({ hostId: z.string(), config: configSchema }),
+  },
+  prepareDraft: {
+    input: z.object({ projectId: z.string().min(1), config: configSchema }),
+    output: z.object({ token: z.string().uuid() }),
+  },
+  readDraft: {
+    input: z.object({ token: z.string().uuid() }),
+    output: configSchema,
+  },
   status: {
     input: threadInput,
     output: z.object({ environmentId: z.string().nullable(), config: configSchema.nullable(), main: slotSchema, runs: z.array(runSchema) }),
