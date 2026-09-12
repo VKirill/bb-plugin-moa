@@ -111,8 +111,8 @@ export function MoAControl() {
   const latest = state?.runs[0];
   const consulting = state?.config?.enabled && (latest?.status === "running" || latest?.status === "waiting");
   return <div className="flex items-center gap-1">
-    <label className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-sm" title={t("Consult a second model before every message", "Совет второй модели перед каждым сообщением")}>
-      <Checkbox aria-label="MoA" checked={state?.config?.enabled ?? false} disabled={!state || busy}
+    <label className="flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1.5 text-xs" title={t("Consult a second model before every message", "Совет второй модели перед каждым сообщением")}>
+      <Checkbox aria-label="MoA" className="size-3 [&_svg]:size-2.5" checked={state?.config?.enabled ?? false} disabled={!state || busy}
         onCheckedChange={checked => void toggle(checked === true)} />
       <span>MoA</span>
       {consulting && <Icon name="Spinner" className="size-3 animate-spin" />}
