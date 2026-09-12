@@ -1,0 +1,337 @@
+import { randomUUID } from "node:crypto";
+import type { BbPluginApi, MessageDispatchHookContext } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+import { configSchema, rpcContract, runSchema, type Slot } from "./contract";
+import { advisorFor, boundedContext, cleanInput, hash, referenceBlock, safeError, textOf, type Input } from "./core";
+import { ADVISOR_PROMPT } from "./prompts";
+import { createStore, type Run, type Session, type ThreadConfig } from "./store";
+
+type Queue = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
+const delay = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
+  if (signal.aborted) return resolve();
+  const done = () => { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); };
+  const timer = setTimeout(done, ms); signal.addEventListener("abort", done, { once: true });
+});
+
+export default function plugin(bb: BbPluginApi) {
+  const store = createStore(bb);
+  const active = new Map<string, { abort: AbortController; promise: Promise<void> }>();
+  const shutdown = new AbortController();
+  const configured = (threadId: string) => store.get<ThreadConfig>(`config:${threadId}`);
+  const runFor = (queueId: string) => {
+    const link = store.get<{ id: string }>(`queue:${queueId}`);
+    return link ? store.get<Run>(`run:${link.id}`) : null;
+  };
+  function saveRun(run: Run) { store.put(`run:${run.id}`, run.threadId, "run", run); changed(run.threadId); }
+  function changed(threadId: string) { if (!shutdown.signal.aborted) bb.realtime.publish("changed", { threadId }); }
+  async function recheck() { if (!shutdown.signal.aborted) await bb.experimental_hooks.recheck("message.dispatch"); }
+  const queue = (threadId: string) => bb.sdk.threads.queuedMessages.list({ threadId });
+  async function mainSlot(threadId: string): Promise<Slot> {
+    const thread = await bb.sdk.threads.get({ threadId });
+    const execution = await bb.sdk.threads.defaultExecutionOptions({ threadId });
+    if (!execution) throw new Error("Choose a model for this chat first.");
+    return { providerId: thread.providerId, model: execution.model, reasoningLevel: execution.reasoningLevel, agentId: null };
+  }
+  async function routing(threadId: string) {
+    const thread = await bb.sdk.threads.get({ threadId });
+    if (!thread.environmentId) throw new Error("The chat environment is not available yet.");
+    const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+    return { thread, environment };
+  }
+  function mainAt(ctx: MessageDispatchHookContext): Slot {
+    return {
+      providerId: ctx.requestedExecution.providerId,
+      model: ctx.requestedExecution.model ?? "",
+      reasoningLevel: ctx.requestedExecution.reasoningLevel ?? "medium", agentId: null,
+    };
+  }
+  function fingerprint(input: readonly Input[number][], main: Slot, revision: number) {
+    return hash({ input: cleanInput(input), provider: main.providerId, model: main.model, revision });
+  }
+  function current(run: Run, entry: Queue, main: Slot) {
+    const cfg = configured(run.threadId);
+    return !!cfg?.config.enabled && run.revision === cfg.revision
+      && run.fingerprint === fingerprint(entry.content, main, cfg.revision);
+  }
+  async function strip(entry: Queue) {
+    const input = cleanInput(entry.content);
+    if (input.length !== entry.content.length) {
+      await bb.sdk.threads.queuedMessages.update({ threadId: entry.threadId, queuedMessageId: entry.id, expectedUpdatedAt: entry.updatedAt, input });
+    }
+  }
+
+  // Admission only: enrichment happens after BB has durably queued the message.
+  bb.experimental_hooks.on("message.dispatch", async ctx => {
+    if (ctx.thread.originPluginId === bb.pluginId || ctx.originPluginId === bb.pluginId) return { action: "proceed" };
+    const cfg = configured(ctx.thread.id);
+    if (!cfg?.config.enabled) {
+      if (cleanInput(ctx.input.blocks).length !== ctx.input.blocks.length && ctx.queuedMessage) {
+        return { action: "wait", reason: "MoA: restoring normal mode" };
+      }
+      return { action: "proceed" };
+    }
+    const main = mainAt(ctx);
+    // A provider retry can carry the already enriched input without a queue row.
+    const matching = store.list<Run>(ctx.thread.id, "run").find(r =>
+      (r.status === "ready" || r.status === "dispatched") && r.revision === cfg.revision
+      && r.fingerprint === fingerprint(ctx.input.blocks, main, cfg.revision)
+      && r.advice && ctx.input.blocks.some(b => b.type === "text" && b.visibility === "agent-only"
+        && b.text === (referenceBlock(r.id, r.advisor, r.advice!) as { text: string }).text));
+    if (matching) return { action: "proceed" };
+    const run = ctx.queuedMessage ? runFor(ctx.queuedMessage.id) : null;
+    if (run?.status === "failed" && current(run, ctx.queuedMessage!, main)) {
+      return { action: "wait", reason: `MoA: ${run.error ?? "consultation failed"}` };
+    }
+    return { action: "wait", reason: "MoA: consulting the second model" };
+  });
+
+  async function nativeAgent(slot: Slot, parentId: string): Promise<string> {
+    if (!slot.agentId) return "";
+    const { thread, environment } = await routing(parentId);
+    const result = await bb.sdk.plugins.callRpc({ pluginId: "cli-agents", method: "select",
+      input: { providerId: slot.providerId, hostId: environment.hostId, projectId: thread.projectId,
+        environmentId: environment.id, agentId: slot.agentId },
+      outputSchema: z.object({ token: z.string().uuid(), label: z.string() }),
+    });
+    return `[cli-agents-selection:${result.token}]\n`;
+  }
+
+  async function consult(run: Run, signal: AbortSignal) {
+    let workerId: string | null = null;
+    let baseline = 0;
+    try {
+      const cfg = configured(run.threadId)!;
+      const { thread, environment } = await routing(run.threadId);
+      const sessionKey = `session:${run.threadId}:${hash({ slot: run.advisor, environment: environment.id, promptVersion: 1 })}`;
+      let session = store.get<Session>(sessionKey);
+      if (session) {
+        const worker = await bb.sdk.threads.get({ threadId: session.workerId }).catch(() => null);
+        if (!worker || worker.deletedAt || worker.archivedAt) session = null;
+      }
+      const timeline = await bb.sdk.threads.timeline({ threadId: run.threadId, segmentLimit: "50" });
+      const rows = timeline.rows.filter(row => row.kind === "conversation" && row.sourceSeqEnd > (session?.cursor ?? 0));
+      const history = boundedContext(rows.map(row => row.kind === "conversation" ? `${row.role}: ${row.text}` : "").join("\n\n"));
+      const prompt = `${ADVISOR_PROMPT}\n\nCanonical conversation updates (may be a bounded recent window):\n${history || "No new completed messages."}\n\nCurrent user request:\n${boundedContext(textOf(run.input), 30000)}`;
+      if (signal.aborted || shutdown.signal.aborted) return;
+      run.status = "running"; saveRun(run);
+      if (session) {
+        workerId = session.workerId;
+        baseline = (await bb.sdk.threads.timeline({ threadId: workerId, segmentLimit: "5" })).maxSeq;
+        run.workerId = workerId; saveRun(run);
+        await bb.sdk.threads.send({ threadId: workerId, mode: "auto", input: [{ type: "text", text: prompt, mentions: [] }],
+          model: run.advisor.model, reasoningLevel: run.advisor.reasoningLevel, serviceTier: run.advisor.serviceTier, permissionMode: "accept-edits" });
+      } else {
+        const agentMarker = await nativeAgent(run.advisor, run.threadId);
+        if (signal.aborted || shutdown.signal.aborted) return;
+        const worker = await bb.sdk.threads.spawn({
+          projectId: thread.projectId, environment: { type: "reuse", environmentId: environment.id },
+          providerId: run.advisor.providerId, model: run.advisor.model, reasoningLevel: run.advisor.reasoningLevel, serviceTier: run.advisor.serviceTier,
+          permissionMode: "accept-edits", visibility: "hidden", title: `MoA advisor · ${run.advisor.model}`,
+          // No parentThreadId: BB auto-notifies parents on child completion, which would
+          // deliver an unsolicited second message. The relationship is plugin-owned.
+          pluginMetadata: { parentThreadId: thread.id, role: "advisor" },
+          prompt: agentMarker + prompt,
+        });
+        workerId = worker.id; run.workerId = workerId; saveRun(run);
+        session = { workerId, cursor: 0, environmentId: environment.id };
+        store.put(sessionKey, thread.id, "session", session);
+      }
+      const started = Date.now();
+      while (!signal.aborted && !shutdown.signal.aborted) {
+        const worker = await bb.sdk.threads.get({ threadId: workerId });
+        if (worker.status === "idle") {
+          const completed = await bb.sdk.threads.timeline({ threadId: workerId, segmentLimit: "5" });
+          if (completed.rows.some(row => row.kind === "conversation" && row.role === "assistant" && row.sourceSeqEnd > baseline)) break;
+        }
+        if (worker.status === "error") throw new Error("Advisor provider unavailable");
+        if (Date.now() - started > cfg.config.timeoutSeconds * 1000) throw new Error("Advisor timeout");
+        await delay(500, signal);
+      }
+      if (signal.aborted || shutdown.signal.aborted) return;
+      const output = (await bb.sdk.threads.output({ threadId: workerId })).output?.trim();
+      if (signal.aborted || shutdown.signal.aborted) return;
+      if (!output) throw new Error("Empty advisor response");
+      const entry = (await queue(run.threadId)).find(q => q.id === run.queueId);
+      const main = entry ? { ...run.aggregator, model: entry.model } : run.aggregator;
+      if (!entry || !current(run, entry, main)) {
+        run.status = "cancelled"; run.finishedAt = Date.now(); saveRun(run); return;
+      }
+      run.advice = output.slice(0, 32000); run.status = "ready"; run.finishedAt = Date.now();
+      saveRun(run);
+      store.put(sessionKey, thread.id, "session", { ...session, cursor: timeline.maxSeq });
+      // The CAS prevents attaching an old answer after the user edits the queued question.
+      await bb.sdk.threads.queuedMessages.update({ threadId: run.threadId, queuedMessageId: entry.id,
+        expectedUpdatedAt: entry.updatedAt, input: [...cleanInput(entry.content), referenceBlock(run.id, run.advisor, run.advice)] });
+      await recheck();
+    } catch (error) {
+      if (!shutdown.signal.aborted && !signal.aborted) {
+        run.status = "failed"; run.error = safeError(error); run.finishedAt = Date.now(); saveRun(run);
+        bb.log.warn(`Consultation ${run.id} failed (${run.advisor.providerId}).`);
+        await recheck().catch(() => {});
+      }
+    } finally {
+      if (workerId) await bb.sdk.threads.stop({ threadId: workerId }).catch(() => {});
+      if (signal.aborted && !shutdown.signal.aborted) {
+        const saved = store.get<Run>(`run:${run.id}`);
+        if (saved?.status !== "bypassed" && saved?.status !== "dispatched") {
+          run.status = "cancelled"; run.finishedAt = Date.now(); saveRun(run);
+        }
+      }
+    }
+  }
+
+  async function scan() {
+    const entries = await bb.sdk.threads.queue.list({ waitHolder: `plugin:${bb.pluginId}` });
+    const visited = new Set<string>();
+    for (const entry of entries) {
+      if (shutdown.signal.aborted) return;
+      const cfg = configured(entry.threadId);
+      if (!cfg?.config.enabled) { await strip(entry); await recheck(); continue; }
+      if (visited.has(entry.threadId)) continue;
+      visited.add(entry.threadId);
+      if (active.has(entry.threadId) || active.size >= 2) continue;
+      const parent = await bb.sdk.threads.get({ threadId: entry.threadId });
+      if (parent.archivedAt || parent.deletedAt) continue;
+      const main: Slot = { providerId: parent.providerId, model: entry.model, reasoningLevel: entry.reasoningLevel, agentId: null };
+      const fp = fingerprint(entry.content, main, cfg.revision);
+      let run = runFor(entry.id);
+      if (run && run.fingerprint === fp && run.revision === cfg.revision) {
+        if (run.status === "failed") continue;
+        if (run.status === "ready" && run.advice) {
+          // Recover a crash between saving advice and enriching the queue row.
+          await bb.sdk.threads.queuedMessages.update({ threadId: entry.threadId, queuedMessageId: entry.id,
+            expectedUpdatedAt: entry.updatedAt, input: [...cleanInput(entry.content), referenceBlock(run.id, run.advisor, run.advice)] });
+          await recheck(); continue;
+        }
+        if (run.status === "running") {
+          // A previous process may have submitted a billable request. Do not replay it.
+          if (run.workerId) await bb.sdk.threads.stop({ threadId: run.workerId }).catch(() => {});
+          run.status = "failed"; run.error = "Consultation interrupted by a reload. Retry to continue."; saveRun(run); continue;
+        }
+      }
+      if (run && run.fingerprint !== fp) { run.status = "cancelled"; run.finishedAt = Date.now(); saveRun(run); }
+      run = { id: randomUUID(), queueId: entry.id, threadId: entry.threadId, workerId: null,
+        input: cleanInput(entry.content), fingerprint: fp, revision: cfg.revision, status: "waiting",
+        advisor: advisorFor(cfg.config, main), aggregator: main, startedAt: Date.now(), finishedAt: null, error: null, advice: null };
+      saveRun(run); store.put(`queue:${entry.id}`, entry.threadId, "queue", { id: run.id });
+      const abort = new AbortController();
+      const promise = consult(run, abort.signal).finally(() => active.delete(entry.threadId));
+      active.set(entry.threadId, { abort, promise });
+    }
+  }
+
+  async function saveConfig(threadId: string, value: unknown) {
+    const { environment } = await routing(threadId);
+    const config = configSchema.parse(value); advisorFor(config, config.a);
+    if (config.enabled) {
+      for (const slot of [config.a, config.b]) {
+        const catalog = await bb.sdk.providers.models({ environmentId: environment.id, providerId: slot.providerId });
+        const model = catalog.models.find(m => m.model === slot.model);
+        if (!model) throw new Error(`Model is not available: ${slot.model}`);
+        if (model.supportedReasoningEfforts.length && !model.supportedReasoningEfforts.some(e => e.reasoningEffort === slot.reasoningLevel)) {
+          throw new Error(`Reasoning level is not available for ${slot.model}. Choose it in the model picker.`);
+        }
+      }
+    }
+    active.get(threadId)?.abort.abort();
+    const old = configured(threadId);
+    store.put(`config:${threadId}`, threadId, "config", { config, revision: (old?.revision ?? 0) + 1 });
+    for (const entry of await queue(threadId)) await strip(entry).catch(() => {});
+    changed(threadId); await recheck(); return config;
+  }
+  async function status(threadId: string) {
+    const thread = await bb.sdk.threads.get({ threadId });
+    return { environmentId: thread.environmentId, config: configured(threadId)?.config ?? null, main: await mainSlot(threadId), runs: store.list<Run>(threadId, "run").slice(0, 20).map(run => runSchema.parse(run)) };
+  }
+  async function retry(threadId: string, runId: string) {
+    const run = store.get<Run>(`run:${runId}`);
+    if (!run || run.threadId !== threadId || run.status !== "failed") throw new Error("This failed consultation is no longer available.");
+    const entry = (await queue(threadId)).find(e => e.id === run.queueId);
+    if (!entry) throw new Error("The message is no longer queued.");
+    store.delete(`queue:${entry.id}`); changed(threadId); await recheck(); return { ok: true };
+  }
+  bb.rpc.register(rpcContract, {
+    status: ({ threadId }) => status(threadId),
+    save: ({ threadId, config }) => saveConfig(threadId, config),
+    toggle: ({ threadId, enabled }) => {
+      const cfg = configured(threadId); if (!cfg) throw new Error("Choose your model pair first.");
+      return saveConfig(threadId, { ...cfg.config, enabled });
+    },
+    retry: ({ threadId, runId }) => retry(threadId, runId),
+    providers: async ({ threadId }) => {
+      const { environment } = await routing(threadId);
+      return (await bb.sdk.providers.list({ environmentId: environment.id })).map(p => ({ id: p.id, name: p.displayName, available: p.available }));
+    },
+    models: async ({ threadId, providerId }) => {
+      const { environment } = await routing(threadId);
+      const result = await bb.sdk.providers.models({ environmentId: environment.id, providerId });
+      return result.models.map(m => ({ model: m.model, name: m.displayName, efforts: m.supportedReasoningEfforts.map(e => e.reasoningEffort) }));
+    },
+    agents: async ({ threadId, providerId }) => {
+      const { thread, environment } = await routing(threadId);
+      try {
+        return await bb.sdk.plugins.callRpc({ pluginId: "cli-agents", method: "catalog",
+          input: { providerId, hostId: environment.hostId, projectId: thread.projectId, environmentId: environment.id },
+          outputSchema: z.object({ supported: z.boolean(), warnings: z.array(z.string()), agents: z.array(z.object({ id: z.string(), description: z.string() })) }),
+        });
+      } catch { return { supported: false, agents: [], warnings: ["Native agents require the optional CLI Agents plugin and a supported provider."] }; }
+    },
+  });
+
+  bb.cli.register({ name: "moa", summary: "Configure per-chat Mixture of Agents and inspect consultations",
+    commands: [
+      { name: "status", summary: "Inspect one chat", usage: "bb moa status THREAD_ID" },
+      { name: "configure", summary: "Save a model pair", usage: "bb moa configure THREAD_ID CONFIG_JSON" },
+      { name: "on", summary: "Enable MoA", usage: "bb moa on THREAD_ID" },
+      { name: "off", summary: "Disable MoA", usage: "bb moa off THREAD_ID" },
+      { name: "retry", summary: "Retry a failed consultation", usage: "bb moa retry THREAD_ID RUN_ID" },
+    ],
+    async run(argv) {
+      try {
+        const [command, threadId, value] = argv.filter(a => a !== "--json");
+        if (!threadId) return { exitCode: 1, stderr: "Usage: bb moa status|on|off|configure|retry THREAD_ID [CONFIG_JSON|RUN_ID]" };
+        let result: unknown;
+        if (command === "status") {
+          const state = await status(threadId);
+          result = { ...state, runs: state.runs.map(run => ({ ...run, advice: run.advice?.slice(0, 1200) ?? null })) };
+        }
+        else if (command === "configure" && value) result = await saveConfig(threadId, JSON.parse(value));
+        else if (command === "on" || command === "off") {
+          const cfg = configured(threadId); if (!cfg) throw new Error("Choose a model pair first.");
+          result = await saveConfig(threadId, { ...cfg.config, enabled: command === "on" });
+        } else if (command === "retry" && value) result = await retry(threadId, value);
+        else throw new Error("Unknown command.");
+        return { exitCode: 0, stdout: JSON.stringify(result) };
+      } catch (error) { return { exitCode: 1, stderr: error instanceof Error ? error.message : "Invalid request" }; }
+    },
+  });
+  bb.agents.configure(ctx => ctx.origin.pluginId === bb.pluginId ? { tools: [], skills: [], instructions: ADVISOR_PROMPT } : { tools: [], skills: [] });
+  bb.events.on("message.cancelled", ({ entry }) => {
+    const run = runFor(entry.id); if (!run) return;
+    active.get(entry.threadId)?.abort.abort(); run.status = "cancelled"; run.finishedAt = Date.now(); saveRun(run);
+  });
+  bb.events.on("message.dispatched", ({ entry }) => {
+    const run = runFor(entry.id); if (!run) return;
+    const enriched = entry.content.some(b => b.type === "text" && b.visibility === "agent-only" && b.text.startsWith(`[bb-moa-reference:${run.id}]`));
+    run.status = enriched && run.advice ? "dispatched" : "bypassed";
+    run.finishedAt = Date.now(); saveRun(run);
+    if (!enriched) active.get(entry.threadId)?.abort.abort();
+  });
+  for (const event of ["thread.archived", "thread.deleted"] as const) bb.events.on(event, async ({ thread }) => {
+    active.get(thread.id)?.abort.abort();
+    for (const session of store.list<Session>(thread.id, "session")) {
+      await bb.sdk.threads.archive({ threadId: session.workerId }).catch(() => {});
+      await bb.sdk.threads.stop({ threadId: session.workerId }).catch(() => {});
+    }
+  });
+  bb.background.service("consultations", { async start(signal) {
+    while (!signal.aborted && !shutdown.signal.aborted) {
+      try { await scan(); } catch { if (!signal.aborted) bb.log.warn("Could not scan MoA queue; will retry."); }
+      await delay(1000, signal);
+    }
+  } });
+  bb.onDispose(async () => {
+    shutdown.abort(); for (const job of active.values()) job.abort.abort();
+    await Promise.allSettled([...active.values()].map(j => j.promise));
+  });
+}
