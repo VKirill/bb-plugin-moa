@@ -1,6 +1,7 @@
-## Compare two perspectives
+## Mixture of Agents (MoA) for BB — Dual-Model Consultation & History
 
 Enable MoA in a new or existing chat. Two selected models analyze each message independently and in parallel. Your current chat model receives both answers, evaluates them and performs the task. Each participant keeps a separate session for that chat.
+
 
 ## Inspect each consultation
 

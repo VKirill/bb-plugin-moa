@@ -56,7 +56,19 @@
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.6.0"
   },
-  "description": "Two independent advisors for each BB message, with shared model settings, configurable fallback and per-message consultation history.",
+  "description": "Mixture of Agents (MoA) for BB: parallel dual-model consultation, shared settings, configurable fallback and per-message history.",
+  "keywords": [
+    "bb",
+    "bb-plugin",
+    "moa",
+    "mixture-of-agents",
+    "multi-agent",
+    "ai-advisor",
+    "parallel-inference",
+    "llm",
+    "consensus",
+    "developer-tools"
+  ],
   "license": "MIT",
   "author": "Kirill Vechkasov",
   "scripts": {

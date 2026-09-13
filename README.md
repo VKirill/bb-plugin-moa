@@ -1,6 +1,11 @@
-# Mixture of Agents for BB
+# Mixture of Agents (MoA) for BB — Parallel Dual-Model Advisory, Resilient Fallback & History
 
-A and B independently analyze each message in parallel. Your current chat model receives both answers, evaluates them and performs the task. MoA adds a compact per-chat checkbox, shared model settings, configurable fallback and per-message consultation history.
+[![BB Compatibility](https://img.shields.io/badge/BB-%3E%3D0.43.1-blue.svg)](https://getbb.app)
+[![Plugin SDK](https://img.shields.io/badge/Plugin%20SDK-%3E%3D0.4.87-green.svg)](https://getbb.app)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/VKirill/bb-plugin-moa?include_prereleases&color=orange)](https://github.com/VKirill/bb-plugin-moa/releases)
+
+> Two independent AI models analyze each message in parallel. Your current chat model receives both answers, evaluates them, and performs the task with greater precision. MoA adds a compact per-chat toggle, shared model settings, configurable fallback, and per-message consultation history.
 
 **Status:** 0.1.0-beta.6 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
 
@@ -114,3 +119,7 @@ Tests use official BB backend/frontend harnesses and temporary SQLite. See [veri
 Standalone plugin source: no machine paths, credentials or chat artifacts belong in the package. Distribution contains server/app bundles and BB compatibility metadata. GitHub releases are published at https://github.com/VKirill/bb-plugin-moa/releases. Community Marketplace acceptance is a separate review.
 
 Inspired by [Hermes MoA](https://hermes-agent.nousresearch.com/docs/user-guide/features/mixture-of-agents); implementation and prompts are original. See [NOTICE](NOTICE).
+
+## Tags & Ecosystem
+`bb`, `bb-plugin`, `moa`, `mixture-of-agents`, `multi-agent`, `ai-advisor`, `parallel-inference`, `llm`, `consensus`, `developer-tools`
+
