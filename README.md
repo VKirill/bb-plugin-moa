@@ -111,6 +111,6 @@ bb plugin types --check
 
 Tests use official BB backend/frontend harnesses and temporary SQLite. See [verification](docs/verification.md) and [release preparation](docs/releasing.md).
 
-Standalone plugin source: no machine paths, credentials or chat artifacts belong in the package. Distribution contains server/app bundles and BB compatibility metadata. Repository/npm/marketplace publication is a separate step.
+Standalone plugin source: no machine paths, credentials or chat artifacts belong in the package. Distribution contains server/app bundles and BB compatibility metadata. GitHub releases are published at https://github.com/VKirill/bb-plugin-moa/releases. Community Marketplace acceptance is a separate review.
 
 Inspired by [Hermes MoA](https://hermes-agent.nousresearch.com/docs/user-guide/features/mixture-of-agents); implementation and prompts are original. See [NOTICE](NOTICE).

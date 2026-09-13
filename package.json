@@ -56,7 +56,7 @@
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.6.0"
   },
-  "description": "Mixture of Agents for BB: per-chat advisor routing, model pairs and persistent consultation history.",
+  "description": "Two independent advisors for each BB message, with shared model settings, configurable fallback and per-message consultation history.",
   "license": "MIT",
   "author": "Kirill Vechkasov",
   "scripts": {
@@ -91,5 +91,13 @@
     "history.tsx",
     "fallback.tsx",
     "file-access.ts"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VKirill/bb-plugin-moa.git"
+  },
+  "homepage": "https://github.com/VKirill/bb-plugin-moa#readme",
+  "bugs": {
+    "url": "https://github.com/VKirill/bb-plugin-moa/issues"
+  }
 }
