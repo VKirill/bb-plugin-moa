@@ -1,4 +1,22 @@
+# 0.1.0-beta.5
+
+- Run both configured participants independently in parallel, then deliver both references to the acting chat model.
+- Add shared fallback settings: manual decision, one reserve attempt, or continuation with a single successful answer. Manual replacement stops only the selected participant; retries preserve the ready peer.
+- Show a small Workflow action only under verified MoA user messages; remove the expanded composer status badge.
+- Format both history views with native Markdown, including decoded legacy JSON payloads. Keep separate A/B and failed-attempt transcripts.
+- Fix event-history HTTP 400 by requesting pages of at most 100 events.
+- Remove native agent/profile selectors and CLI Agents marker injection; ignore saved profile selections.
+- Preserve legacy one-advisor history and exact new private references for delivery verification.
+
 # Changelog
+
+## 0.1.0-beta.4
+
+- Per-message MoA history action opens an in-app modal for the selected consultation.
+- Inspect actual advisor input, answer, confirmed acting-model receipt and the native advisor transcript.
+- Show participating model icons/names inside the consultation modal; keep the composer compact.
+- Match historical consultations by outgoing reference and request sequence, including reused advisor sessions.
+
 
 ## 0.1.0-beta.3
 

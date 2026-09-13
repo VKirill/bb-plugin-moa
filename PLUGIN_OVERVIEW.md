@@ -1,14 +1,13 @@
 # Mixture of Agents
 
-Choose a model pair, enable the composer checkbox, and consult a second model before your current BB agent acts and answers.
+Two independent advisors analyze each request in parallel; your current BB model aggregates their answers and performs the task.
 
-- Enable MoA before the first message in a new chat.
-- Shared model/profile settings across chats and projects; per-chat enabling.
-- Native runtime/event monitoring; long-wait notices without stopping active models.
-- Native provider/model/reasoning picker and optional CLI Agents profiles.
-- Automatic advisor-role switching when the current model changes.
-- Persistent advisor sessions and inspectable consultation history.
-- Retries, cancellation and ordinary-mode restoration.
-- Uses existing BB providers and subscriptions.
+- Compact checkbox in new and existing chats.
+- Shared model, reasoning and fallback settings; per-chat enabling.
+- Reserve model, continuation with one answer, or manual retry on failure.
+- Native BB activity monitoring; active models survive long-wait notices.
+- Small message action opens formatted inputs, answers and delivery confirmation.
+- Separate persistent A/B sessions and retained reserve-attempt transcripts.
+- Existing BB providers and subscriptions; no native profile injection.
 
 Beta for BB 0.43.1 / SDK 0.4.87. BB's explicit Send now can override the wait. See README for verified scope and limitations.

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import { fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, mountPluginContentScripts, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Config } from "../contract";
 beforeAll(() => {
@@ -78,4 +78,56 @@ it("hides only the MoA draft chip and removes its styling on disposal", async ()
     await scripts.lifecycle.dispose();
     expect(document.querySelector('style[data-bb-moa="draft-marker"]')).toBeNull();
   } finally { own.remove(); other.remove(); await scripts.lifecycle.dispose(); }
+});
+
+it("opens an exact message consultation in a modal and exposes the advisor session", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const history = await import("../history");
+  const scripts = await mountPluginContentScripts(app, { pluginId: "moa", generation: 3 });
+  const row = document.createElement("div"); row.dataset.timelineRowId = "parent:user-seed:10";
+  const button = document.createElement("button"); button.setAttribute("aria-label", history.HISTORY_TITLE); row.append(button); document.body.append(row);
+  const plain = document.createElement("button"); plain.setAttribute("aria-label", history.HISTORY_TITLE); document.body.append(plain);
+  const run = { id: "run", threadId: "parent", workerId: "worker", status: "dispatched", advisor: config.a, aggregator: config.b,
+    startedAt: 1000, finishedAt: 2000, advice: "Check the costs", error: null };
+  const slot = renderSlot(app.appOverlays[0], {}, { context: { threadId: "parent", projectId: "project" }, rpc: {
+    messageIndex: () => [{ rowId: "parent:user-seed:10", sourceSeq: 10, runId: "run" }],
+    audit: () => ({ run, userInput: "My exact question", advisorInput: "Actual advisor context", advisorInputVerified: true,
+      advisorRequestedAt: 1100, mainInput: "Question + Check the costs", mainInputVerified: true, mainRequestedAt: 2000 }),
+  } });
+  cleanups.push(() => { history.showAudit(null); slot.lifecycle.unmount(); row.remove(); plain.remove(); void scripts.lifecycle.dispose(); });
+  await waitFor(() => expect(getComputedStyle(button).display).toBe("inline-flex"));
+  expect(getComputedStyle(plain).display).toBe("none");
+  await act(async () => { await app.messageActions[0].run({ threadId: "parent", message: { id: "parent:user-seed:10", threadId: "parent", role: "user", text: "Same text", sourceSeqEnd: 10 }, openPanel: () => false }); });
+  await slot.findByRole("dialog", { name: history.HISTORY_TITLE });
+  await slot.findByText("My exact question");
+  await slot.findByText("Check the costs");
+  await slot.findByText("Delivery confirmed");
+  expect(slot.inspection.rpcCalls).toContainEqual(expect.objectContaining({ method: "audit", input: { threadId: "parent", runId: "run" } }));
+  fireEvent.click(slot.getByRole("button", { name: "Advisor session" }));
+});
+
+it("decodes legacy and multi-participant payloads for readable Markdown", async () => {
+  const { readablePayload } = await import("../history");
+  expect(readablePayload('[bb-moa-reference:run]\n' + JSON.stringify({ advice: '## Heading\n\n**Important**' }))).toBe('\n## Heading\n\n**Important**');
+  const formatted = readablePayload(JSON.stringify({ advisors: [{ model: 'A', advice: 'First\n\n- Item' }, { model: 'B', advice: 'Second' }] }));
+  expect(formatted).toContain('### A\n\nFirst\n\n- Item'); expect(formatted).toContain('### B\n\nSecond');
+  expect(formatted).not.toContain('\\n');
+});
+
+it("saves fallback from the existing MoA settings dialog", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  let saved = config;
+  const slot = renderSlot(app.composerCustomizations[0].actions![0], {}, {
+    composer: { scope: { kind: "thread", threadId: "parent" } },
+    rpc: { status: () => ({ config: saved, main: config.a, environmentId: "env", runs: [] }),
+      agents: () => ({ supported: false, agents: [], warnings: [] }),
+      save: (input: unknown) => { saved = (input as { config: Config }).config; return saved; } },
+  });
+  cleanups.push(() => slot.lifecycle.unmount());
+  const settings = await slot.findByRole("button", { name: "MoA settings and history" });
+  await waitFor(() => expect(settings.hasAttribute("disabled")).toBe(false)); fireEvent.click(settings);
+  const policy = await slot.findByRole("combobox", { name: "Fallback policy" });
+  fireEvent.change(policy, { target: { value: "available" } });
+  fireEvent.click(slot.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(saved.failurePolicy).toBe("available"));
 });

@@ -1,27 +1,27 @@
 # Mixture of Agents for BB
 
-Consult a second model before each message, then let your current chat agent act and answer. MoA adds a per-chat checkbox, a native model-pair picker, automatic advisor-role switching, and persistent consultation history.
+A and B independently analyze each message in parallel. Your current chat model receives both answers, evaluates them and performs the task. MoA adds a compact per-chat checkbox, shared model settings, configurable fallback and per-message consultation history.
 
-**Status:** 0.1.0-beta.3 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
+**Status:** 0.1.0-beta.5 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
 
 ## Use
 
 1. Open a new or existing chat.
 2. Click the settings button next to **MoA** in the composer.
 3. Choose two different provider/model combinations, A and B. BB's picker also selects reasoning and supported service tier.
-4. Save and enable MoA. Models, native profiles and the long-wait notice threshold are shared across all chats and projects; the checkbox stays local to each chat. In a new chat, the first-message selection is carried in hidden draft metadata; the checkbox is the visible control. Each normal submission waits for the advisor before the original request and private reference context reach your current agent.
+4. Save and enable MoA. Models, fallback and the long-wait notice threshold are shared across all chats and projects; the checkbox stays local to each chat. In a new chat, the first-message selection is carried in hidden draft metadata; the checkbox is the visible control. Each normal submission waits for both participants before the original request and private reference context reach your current agent.
 5. Uncheck MoA to resume ordinary delivery. Re-enabling continues saved advisor history and supplies intervening conversation updates.
 
-If the current model matches B, A advises. Otherwise B advises. The current model remains the aggregator and keeps its native agent identity. Optional per-slot agent/profile selections apply when that slot serves as advisor and require the separate **CLI Agents** plugin.
+Both selected participants run even when the main chat uses one of their models. Each has a separate persistent session. MoA does not select native agents/profiles or add CLI Agents selection markers; legacy profile settings are ignored.
 
 Desktop uses BB's action slot before voice/send; compact composers get a control above the input. English/Russian copy follows browser language. MoA is off until a pair is configured and explicitly enabled in that chat.
 
-The settings dialog shows recent consultations, outputs and links to advisor histories, with retries for failures. Workers are hidden from the sidebar; their runtime is stopped after each consultation and their history retained.
+Hover a user message delivered through MoA and click its Workflow icon to open the consultation modal. The **This message** tab shows the user request, actual advisor input, advisor answer and confirmed acting-model input. Separate **Session A/B** tabs embed the native BB transcripts without a composer. Existing settings history also links to this modal, with retries for failures. Workers are hidden from the sidebar; their runtime is stopped after each consultation and their history retained.
 
 ## Delivery and history
 
 ```text
-MoA on:  user message → queued consultation → current agent + advice → answer/actions
+MoA on:  user message → parallel A + B consultations → current agent + both answers → answer/actions
 MoA off: user message → current agent → answer/actions
 ```
 
@@ -38,11 +38,16 @@ Plugin state and consultation records use the plugin's SQLite database in BB-man
 - Advisors are instructed not to use tools or perform actions. Native sessions still have provider capabilities: this is an advisory role, **not a universal read-only sandbox**. The main agent retains its normal permissions.
 - Initial context is a bounded recent window: up to 50 timeline segments, trimmed to 60,000 characters. Long histories may be incomplete.
 - Original files, images and mentions are preserved for the main agent. Advisors get text and labelled attachment references; they do not automatically inspect file contents or image pixels.
-- Role switching compares exact provider/model IDs. Two profiles of the same model do not form a pair. Changing a slot's profile, effort or service tier creates its own advisory session.
-- CLI Agents is optional and provider-dependent. Live model routing/session reuse has been checked with Codex Luna/Sol; other providers need their own login and validation.
+- A and B must have different provider/model IDs. Changing a slot's effort or service tier creates its own advisory session.
 - New chats can opt in before the first message. Selection belongs to the draft, not all tabs or future chats. Unchecking MoA returns that draft to ordinary mode. A lifecycle-scoped content script hides only the plugin's native draft chip; other mentions are unaffected (verified against BB 0.43.1). Side-chat composers do not opt in.
 - Before the main workspace exists, the first advisor runs in the project checkout on the machine resolved from the actual submission (a personal workspace only for an unfiled chat). Its thread is retained after the main workspace is provisioned. This requires an existing host and a project source on that host. The main workspace selection is preserved, including a separately requested worktree.
-- The new-chat picker discovers models using the project's default machine (or BB primary machine for an unfiled chat); the advisor model is validated on the actual submission machine before launch. Shared native profiles are preserved on first-message routing, using the actual host/project before an environment exists. Profiles can be edited in existing-chat settings and must be available on the target machine. Shared settings are offered with MoA off for each new chat.
+- The new-chat picker discovers models using the project's default machine (or BB primary machine for an unfiled chat); the advisor model is validated on the actual submission machine before launch. Shared settings are offered with MoA off for each new chat.
+
+## Message history
+
+Receipt confirmation matches the complete private reference against BB's recorded outgoing request, including thread and run identity; identical question text is never used to join histories. Reused advisor sessions are matched by consultation time, not their latest response. The per-message button appears only on verified MoA user messages. Visibility decorates BB 0.43.1 native `data-timeline-row-id` anchors through a lifecycle-scoped content script because SDK message actions currently have no availability predicate. Recheck this adapter on a BB upgrade; settings history remains available independently.
+
+The lookup scans the latest 500 outgoing user requests in each involved thread. Audit display caps advisor input at 150,000 and acting-model input at 200,000 characters. Missing retained events are reported as unavailable; prepared input is not labelled delivered. Native session history can contain previous consultations; the message tab isolates the selected one.
 
 ## Long consultations
 
@@ -51,6 +56,18 @@ Plugin state and consultation records use the plugin's SQLite database in BB-man
 Active, starting, pending, reconnecting and queued/background work is allowed to continue beyond the threshold, including silent reasoning. MoA accepts a fresh answer after the worker is idle with no queued or background-agent work. Explicit provider errors surface as failures; an idle worker with no new answer after the threshold also fails. Missing progress text alone does not establish a hang. BB/provider watchdogs retain their own behavior.
 
 Users can disable MoA, cancel the queued message or explicitly Send now. Changing the notice threshold keeps the current consultation running. Changing the shared pair invalidates pending advice; plugin reload currently interrupts running consultations and requires an explicit retry. Do not reload during live advisory work.
+
+## Fallback
+
+The existing MoA settings dialog includes **If a participant fails**. These settings are shared across chats:
+
+- `failurePolicy: "wait"` (default): keep the message queued for a manual retry, cancellation or mode change.
+- `failurePolicy: "reserve"`: use the selected `reserve` model once for each failed participant. It must differ from A and B. A working peer continues; its completed answer is preserved. Failure of the reserve keeps the message queued.
+- `failurePolicy: "available"`: wait for all still-working participants and proceed with one successful answer if the other failed. The main model and history explicitly report the missing participant. If both fail, remain queued.
+
+A configured reserve can also replace an active participant manually from the consultation modal. The button explicitly stops that participant and starts the reserve; no silence timer automatically cancels active reasoning. Prior attempt transcripts remain available. Retry keeps completed peer answers and repeats only failed participants. Each participant/reserve combination has a separate session.
+
+Old consultations retain the original one-advisor record and are labelled historical. Multi-advisor references are persisted exactly for durable delivery verification.
 
 ## Install from a checkout
 
@@ -72,7 +89,7 @@ bb moa retry THREAD_ID RUN_ID
 bb moa configure THREAD_ID '{"enabled":false,"a":{"providerId":"codex","model":"MODEL_A","reasoningLevel":"medium"},"b":{"providerId":"codex","model":"MODEL_B","reasoningLevel":"medium"},"timeoutSeconds":240}'
 ```
 
-Use IDs from the live picker. `agentId` is optional. `serviceTier` may be `default` or `fast` where supported. CLI status is bounded and omits original prompt content; the UI displays stored advice, capped at 32,000 characters per consultation.
+Use IDs from the live picker. Legacy `agentId` is accepted for compatibility and normalized to null. `serviceTier` may be `default` or `fast` where supported. CLI status is bounded and omits original prompt content; the UI displays stored advice, capped at 32,000 characters per participant.
 
 ## Development
 

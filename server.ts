@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { BbPluginApi, MessageDispatchHookContext } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { configSchema, rpcContract, runSchema, type Slot } from "./contract";
-import { advisorFor, boundedContext, cleanInput, hash, referenceBlock, safeError, textOf, type Input } from "./core";
+import { advisorFor, boundedContext, cleanInput, hash, runReference, sameModel, safeError, textOf, type Input } from "./core";
 import { ADVISOR_PROMPT } from "./prompts";
-import { createStore, type Run, type Session, type ThreadConfig, type DraftSelection, type Bootstrap, type SharedSettings } from "./store";
+import { createAudit } from "./audit";
+import { createStore, type Run, type Session, type ThreadConfig, type DraftSelection, type Bootstrap, type SharedSettings, type Member } from "./store";
 
 type Queue = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["queuedMessages"]["list"]>>[number];
 const delay = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
@@ -13,18 +14,29 @@ const delay = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => 
   const timer = setTimeout(done, ms); signal.addEventListener("abort", done, { once: true });
 });
 
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener("abort", abort); resolve(null); };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(value => { signal.removeEventListener("abort", abort); resolve(value); }, error => { signal.removeEventListener("abort", abort); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+
 export default function plugin(bb: BbPluginApi) {
   const store = createStore(bb);
+  const audit = createAudit(bb, store);
   const active = new Map<string, { abort: AbortController; promise: Promise<void> }>();
+  const memberControls = new Map<string, { abort: AbortController; replace: boolean }>();
   const shutdown = new AbortController();
   const localConfig = (threadId: string) => store.get<ThreadConfig>(`config:${threadId}`);
   const shared = () => store.get<SharedSettings>("global:settings");
   const configured = (threadId: string) => {
     const local = localConfig(threadId), global = shared();
     return global ? {
-      config: { ...global.settings, enabled: local?.config.enabled ?? false },
+      config: configSchema.parse({ ...global.settings, enabled: local?.config.enabled ?? false }),
       revision: hash({ local: local?.revision ?? 0, global: global.revision }),
-    } : local;
+    } : local ? { ...local, config: configSchema.parse(local.config) } : null;
   };
   async function saveShared(config: ReturnType<typeof configSchema.parse>) {
     const { enabled: _, ...settings } = config;
@@ -43,14 +55,16 @@ export default function plugin(bb: BbPluginApi) {
     const link = store.get<{ id: string }>(`queue:${queueId}`);
     return link ? store.get<Run>(`run:${link.id}`) : null;
   };
-  function saveRun(run: Run) { store.put(`run:${run.id}`, run.threadId, "run", run); changed(run.threadId); }
-  function changed(threadId: string) { if (!shutdown.signal.aborted) bb.realtime.publish("changed", { threadId }); }
+  function saveRun(run: Run) { store.put(`run:${run.id}`, run.threadId, "run", run); changed(run.threadId, run.status); }
+  function changed(threadId: string, status?: Run["status"]) { if (!shutdown.signal.aborted) bb.realtime.publish("changed", { threadId, ...(status ? { status } : {}) }); }
   async function recheck() { if (!shutdown.signal.aborted) await bb.experimental_hooks.recheck("message.dispatch"); }
   const queue = (threadId: string) => bb.sdk.threads.queuedMessages.list({ threadId });
   async function mainSlot(threadId: string): Promise<Slot> {
     const thread = await bb.sdk.threads.get({ threadId });
     const execution = await bb.sdk.threads.defaultExecutionOptions({ threadId });
     if (!execution) {
+      const pending = (await bb.sdk.threads.queuedMessages.list({ threadId }))[0];
+      if (pending) return { providerId: thread.providerId, model: pending.model, reasoningLevel: pending.reasoningLevel, agentId: null };
       const boot = store.get<Bootstrap>(`bootstrap:${threadId}`);
       if (boot) return boot.main;
       throw new Error("Choose a model for this chat first.");
@@ -128,45 +142,48 @@ export default function plugin(bb: BbPluginApi) {
       (r.status === "ready" || r.status === "dispatched") && r.revision === cfg.revision
       && r.fingerprint === fingerprint(ctx.input.blocks, main, cfg.revision)
       && r.advice && ctx.input.blocks.some(b => b.type === "text" && b.visibility === "agent-only"
-        && b.text === (referenceBlock(r.id, r.advisor, r.advice!) as { text: string }).text));
+        && b.text === (runReference(r) as { text: string }).text));
     if (matching) return { action: "proceed" };
     const run = ctx.queuedMessage ? runFor(ctx.queuedMessage.id) : null;
     if (run?.status === "failed" && current(run, ctx.queuedMessage!, main)) {
       return { action: "wait", reason: `MoA: ${run.error ?? "consultation failed"}` };
     }
-    return { action: "wait", reason: "MoA: consulting the second model" };
+    return { action: "wait", reason: "MoA: consulting both participants" };
   });
 
-  async function nativeAgent(slot: Slot, parentId: string): Promise<string> {
-    if (!slot.agentId) return "";
-    const { thread, environment, bootstrap } = await routing(parentId);
-    const result = await bb.sdk.plugins.callRpc({ pluginId: "cli-agents", method: "select",
-      input: { providerId: slot.providerId, hostId: environment.hostId, projectId: thread.projectId,
-        ...(!bootstrap ? { environmentId: environment.id } : {}), agentId: slot.agentId },
-      outputSchema: z.object({ token: z.string().uuid(), label: z.string() }),
-    });
-    return `[cli-agents-selection:${result.token}]\n`;
-  }
-
-  async function consult(run: Run, signal: AbortSignal) {
+  async function requestAdvice(run: Run, member: Member, signal: AbortSignal) {
+    if (member.status === "ready") return;
+    member.advisor = { ...member.advisor, agentId: null };
     let workerId: string | null = null;
     let baseline = 0;
     let stage = "Preparing consultation";
+    const saveMember = () => {
+      const saved = store.get<Run>(`run:${run.id}`);
+      if (saved && ["bypassed", "dispatched", "cancelled"].includes(saved.status)) { run.status = saved.status; run.finishedAt = saved.finishedAt; }
+      saveRun(run);
+    };
     try {
+      member.startedAt = Date.now(); member.finishedAt = null; member.status = "running"; member.error = null; saveMember();
       const cfg = configured(run.threadId)!;
       const { thread, environment, bootstrap, spawnEnvironment } = await routing(run.threadId);
       if (bootstrap) {
         stage = "Checking advisor model";
-        const catalog = await bb.sdk.providers.models({ hostId: environment.hostId, providerId: run.advisor.providerId });
-        if (!catalog.models.some(m => m.model === run.advisor.model)) throw new Error("Advisor model is not available on the selected machine.");
+        const catalog = await bb.sdk.providers.models({ hostId: environment.hostId, providerId: member.advisor.providerId });
+        if (!catalog.models.some(m => m.model === member.advisor.model)) throw new Error("Advisor model is not available on the selected machine.");
       }
-      const sessionKey = `session:${run.threadId}:${hash({ slot: run.advisor, environment: environment.id, promptVersion: 1 })}`;
+      const sessionKey = `session:${run.threadId}:${hash({ slot: member.advisor, participant: member.key, environment: environment.id, promptVersion: 1 })}`;
       let session = store.get<Session>(sessionKey);
-      if (!session && !bootstrap) {
-        // Keep the first advisor's history when BB later provisions the main workspace.
-        const coldKey = `session:${run.threadId}:${hash({ slot: run.advisor, environment: `bootstrap:${environment.hostId}`, promptVersion: 1 })}`;
-        session = store.get<Session>(coldKey);
-        if (session) { store.put(sessionKey, thread.id, "session", session); store.delete(coldKey); }
+      const previousKeys = [
+        `session:${run.threadId}:${hash({ slot: member.advisor, environment: environment.id, promptVersion: 1 })}`,
+        ...(!bootstrap ? [
+          `session:${run.threadId}:${hash({ slot: member.advisor, participant: member.key, environment: `bootstrap:${environment.hostId}`, promptVersion: 1 })}`,
+          `session:${run.threadId}:${hash({ slot: member.advisor, environment: `bootstrap:${environment.hostId}`, promptVersion: 1 })}`,
+        ] : []),
+      ];
+      for (const key of previousKeys) {
+        if (session) break;
+        session = store.get<Session>(key);
+        if (session) { store.put(sessionKey, thread.id, "session", session); store.delete(key); }
       }
       if (session) {
         const worker = await bb.sdk.threads.get({ threadId: session.workerId }).catch(() => null);
@@ -178,27 +195,28 @@ export default function plugin(bb: BbPluginApi) {
       const history = boundedContext(rows.map(row => row.kind === "conversation" ? `${row.role}: ${row.text}` : "").join("\n\n"));
       const prompt = `${ADVISOR_PROMPT}\n\nCanonical conversation updates (may be a bounded recent window):\n${history || "No new completed messages."}\n\nCurrent user request:\n${boundedContext(textOf(run.input), 30000)}`;
       if (signal.aborted || shutdown.signal.aborted) return;
-      run.status = "running"; saveRun(run);
+      member.status = "running"; saveMember();
       stage = "Starting advisor session";
       if (session) {
         workerId = session.workerId;
         baseline = (await bb.sdk.threads.timeline({ threadId: workerId, segmentLimit: "5" })).maxSeq;
-        run.workerId = workerId; saveRun(run);
+        member.workerId = workerId; saveMember();
+        member.advisorInput = prompt; saveMember();
         await bb.sdk.threads.send({ threadId: workerId, mode: "auto", input: [{ type: "text", text: prompt, mentions: [] }],
-          model: run.advisor.model, reasoningLevel: run.advisor.reasoningLevel, serviceTier: run.advisor.serviceTier, permissionMode: "accept-edits" });
+          model: member.advisor.model, reasoningLevel: member.advisor.reasoningLevel, serviceTier: member.advisor.serviceTier, permissionMode: "accept-edits" });
       } else {
-        const agentMarker = await nativeAgent(run.advisor, run.threadId);
         if (signal.aborted || shutdown.signal.aborted) return;
+        member.advisorInput = prompt; saveMember();
         const worker = await bb.sdk.threads.spawn({
           projectId: thread.projectId, environment: spawnEnvironment,
-          providerId: run.advisor.providerId, model: run.advisor.model, reasoningLevel: run.advisor.reasoningLevel, serviceTier: run.advisor.serviceTier,
-          permissionMode: "accept-edits", visibility: "hidden", title: `MoA advisor · ${run.advisor.model}`,
+          providerId: member.advisor.providerId, model: member.advisor.model, reasoningLevel: member.advisor.reasoningLevel, serviceTier: member.advisor.serviceTier,
+          permissionMode: "accept-edits", visibility: "hidden", title: `MoA advisor · ${member.advisor.model}`,
           // No parentThreadId: BB auto-notifies parents on child completion, which would
           // deliver an unsolicited second message. The relationship is plugin-owned.
-          pluginMetadata: { parentThreadId: thread.id, role: "advisor" },
-          prompt: agentMarker + prompt,
+          pluginMetadata: { parentThreadId: thread.id, role: "advisor", participant: member.key },
+          prompt: prompt,
         });
-        workerId = worker.id; run.workerId = workerId; saveRun(run);
+        workerId = worker.id; member.workerId = workerId; saveMember();
         session = { workerId, cursor: 0, environmentId: environment.id };
         store.put(sessionKey, thread.id, "session", session);
       }
@@ -214,10 +232,12 @@ export default function plugin(bb: BbPluginApi) {
           // inactivity from missing text. Silent reasoning may still be active.
           const recent = await bb.sdk.threads.events.list({ threadId: workerId, order: "desc", limit: "1" }).catch(() => []);
           if (signal.aborted || shutdown.signal.aborted) return;
-          run.progress = { state: worker.runtime?.displayStatus ?? worker.status, observedAt: Date.now(),
-            lastEventAt: recent[0]?.createdAt ?? run.progress?.lastEventAt ?? null,
-            lastEventType: recent[0]?.type ?? run.progress?.lastEventType ?? null, overdue };
-          saveRun(run); nextObservation = Date.now() + 3000;
+          member.progress = { state: worker.runtime?.displayStatus ?? worker.status, observedAt: Date.now(),
+            lastEventAt: recent[0]?.createdAt ?? member.progress?.lastEventAt ?? null,
+            lastEventType: recent[0]?.type ?? member.progress?.lastEventType ?? null, overdue };
+          run.progress = { ...member.progress, state: `${run.members?.filter(m => m.status === "ready").length ?? 0}/2 ready`,
+            overdue: run.members?.some(m => m.progress?.overdue) ?? false };
+          saveMember(); nextObservation = Date.now() + 3000;
         }
         if (worker.status === "idle" && !worker.queuedMessageCount && !worker.activeBackgroundAgentCount) {
           const completed = await bb.sdk.threads.timeline({ threadId: workerId, segmentLimit: "5" });
@@ -230,29 +250,78 @@ export default function plugin(bb: BbPluginApi) {
         await delay(500, signal);
       }
       if (signal.aborted || shutdown.signal.aborted) return;
-      const output = (await bb.sdk.threads.output({ threadId: workerId })).output?.trim();
+      const output = (await abortable(bb.sdk.threads.output({ threadId: workerId, signal }), signal))?.output?.trim();
       if (signal.aborted || shutdown.signal.aborted) return;
       if (!output) throw new Error("Empty advisor response");
+      member.advice = output.slice(0, 32000); member.status = "ready"; member.finishedAt = Date.now();
+      store.put(sessionKey, thread.id, "session", { ...session, cursor: timeline.maxSeq });
+      saveMember();
+    } catch (error) {
+      if (!signal.aborted && !shutdown.signal.aborted) {
+        member.status = "failed"; member.error = `${stage}: ${safeError(error)}`; member.finishedAt = Date.now(); saveMember();
+        bb.log.warn(`Consultation ${run.id}, participant ${member.key} failed (${member.advisor.providerId}).`);
+      }
+    } finally {
+      if (workerId) await bb.sdk.threads.stop({ threadId: workerId }).catch(() => {});
+      if (signal.aborted && !shutdown.signal.aborted && member.status !== "ready") {
+        member.status = "cancelled"; member.finishedAt = Date.now(); saveMember();
+      }
+    }
+  }
+
+  async function consultMember(run: Run, member: Member, signal: AbortSignal) {
+    if (member.status === "ready") return;
+    const control = { abort: new AbortController(), replace: false };
+    const key = `${run.id}:${member.key}`;
+    memberControls.set(key, control);
+    try {
+      if (member.status !== "failed") await requestAdvice(run, member, AbortSignal.any([signal, control.abort.signal]));
+      if (signal.aborted || shutdown.signal.aborted) return;
+      const config = configured(run.threadId)!.config;
+      if (!member.primaryAdvisor && config.reserve && (control.replace || (member.status === "failed" && config.failurePolicy === "reserve"))) {
+        const { key: _, primaryAdvisor: __, attempts: ___, advisorInput: ____, ...previous } = member;
+        member.attempts = [...(member.attempts ?? []), previous];
+        member.primaryAdvisor = member.advisor;
+        member.advisor = config.reserve;
+        member.workerId = null; member.status = "waiting"; member.error = null; member.advice = null; member.progress = undefined; member.advisorInput = undefined;
+        saveRun(run);
+        await requestAdvice(run, member, signal);
+      }
+    } finally { memberControls.delete(key); }
+  }
+
+  async function consult(run: Run, signal: AbortSignal) {
+    try {
+      run.status = "running"; saveRun(run);
+      // Every participant gets the same canonical updates independently. Neither
+      // sees its peer's fresh proposal. BB owns provider capacity and queuing.
+      await Promise.all(run.members!.map(member => consultMember(run, member, signal)));
+      if (signal.aborted || shutdown.signal.aborted) return;
+      const failed = run.members!.filter(member => member.status !== "ready");
+      const available = run.members!.filter(member => member.status === "ready" && member.advice);
+      const allowPartial = configured(run.threadId)?.config.failurePolicy === "available" && available.length > 0;
+      if (failed.length && !allowPartial) {
+        run.status = "failed"; run.error = failed.map(m => `${m.key.toUpperCase()} (${m.advisor.model}): ${m.error ?? "No final answer"}`).join("\n");
+        run.finishedAt = Date.now(); saveRun(run); await recheck(); return;
+      }
       const entry = (await queue(run.threadId)).find(q => q.id === run.queueId);
       const main = entry ? { ...run.aggregator, model: entry.model } : run.aggregator;
       if (!entry || !current(run, entry, main)) {
         run.status = "cancelled"; run.finishedAt = Date.now(); saveRun(run); return;
       }
-      run.advice = output.slice(0, 32000); run.status = "ready"; run.finishedAt = Date.now();
-      saveRun(run);
-      store.put(sessionKey, thread.id, "session", { ...session, cursor: timeline.maxSeq });
-      // The CAS prevents attaching an old answer after the user edits the queued question.
+      run.partial = failed.length > 0;
+      run.advice = available.map(m => `## ${m.key.toUpperCase()} · ${m.advisor.model}\n\n${m.advice}`).join("\n\n---\n\n");
+      const reference = runReference(run);
+      if (reference.type === "text") run.referenceText = reference.text;
+      run.status = "ready"; run.finishedAt = Date.now(); saveRun(run);
       await bb.sdk.threads.queuedMessages.update({ threadId: run.threadId, queuedMessageId: entry.id,
-        expectedUpdatedAt: entry.updatedAt, input: [...cleanInput(entry.content), referenceBlock(run.id, run.advisor, run.advice)] });
+        expectedUpdatedAt: entry.updatedAt, input: [...cleanInput(entry.content), runReference(run)] });
       await recheck();
     } catch (error) {
-      if (!shutdown.signal.aborted && !signal.aborted) {
-        run.status = "failed"; run.error = `${stage}: ${safeError(error)}`; run.finishedAt = Date.now(); saveRun(run);
-        bb.log.warn(`Consultation ${run.id} failed (${run.advisor.providerId}).`);
-        await recheck().catch(() => {});
+      if (!signal.aborted && !shutdown.signal.aborted) {
+        run.status = "failed"; run.error = safeError(error); run.finishedAt = Date.now(); saveRun(run); await recheck().catch(() => {});
       }
     } finally {
-      if (workerId) await bb.sdk.threads.stop({ threadId: workerId }).catch(() => {});
       if (signal.aborted && !shutdown.signal.aborted) {
         const saved = store.get<Run>(`run:${run.id}`);
         if (saved?.status !== "bypassed" && saved?.status !== "dispatched") {
@@ -278,23 +347,33 @@ export default function plugin(bb: BbPluginApi) {
       const fp = fingerprint(entry.content, main, cfg.revision);
       let run = runFor(entry.id);
       if (run && run.fingerprint === fp && run.revision === cfg.revision) {
-        if (run.status === "failed") continue;
+        if (run.status === "failed") {
+          const canRecover = run.members && (cfg.config.failurePolicy === "available" && run.members.some(m => m.status === "ready")
+            || cfg.config.failurePolicy === "reserve" && cfg.config.reserve && run.members.some(m => m.status === "failed" && !m.primaryAdvisor));
+          if (!canRecover) continue;
+          run.status = "waiting";
+        }
         if (run.status === "ready" && run.advice) {
           // Recover a crash between saving advice and enriching the queue row.
           await bb.sdk.threads.queuedMessages.update({ threadId: entry.threadId, queuedMessageId: entry.id,
-            expectedUpdatedAt: entry.updatedAt, input: [...cleanInput(entry.content), referenceBlock(run.id, run.advisor, run.advice)] });
+            expectedUpdatedAt: entry.updatedAt, input: [...cleanInput(entry.content), runReference(run)] });
           await recheck(); continue;
         }
         if (run.status === "running") {
           // A previous process may have submitted a billable request. Do not replay it.
-          if (run.workerId) await bb.sdk.threads.stop({ threadId: run.workerId }).catch(() => {});
+          for (const workerId of run.members?.map(m => m.workerId).filter((id): id is string => !!id) ?? (run.workerId ? [run.workerId] : [])) await bb.sdk.threads.stop({ threadId: workerId }).catch(() => {});
+          for (const member of run.members ?? []) if (member.status !== "ready") { member.status = "failed"; member.error = "Interrupted by reload"; }
           run.status = "failed"; run.error = "Consultation interrupted by a reload. Retry to continue."; saveRun(run); continue;
         }
       }
       if (run && run.fingerprint !== fp) { run.status = "cancelled"; run.finishedAt = Date.now(); saveRun(run); }
-      run = { id: randomUUID(), queueId: entry.id, threadId: entry.threadId, workerId: null,
-        input: cleanInput(entry.content), fingerprint: fp, revision: cfg.revision, status: "waiting",
-        advisor: advisorFor(cfg.config, main), aggregator: main, startedAt: Date.now(), finishedAt: null, error: null, advice: null };
+      if (!(run?.members && run.status === "waiting" && run.fingerprint === fp && run.revision === cfg.revision)) {
+        run = { id: randomUUID(), queueId: entry.id, threadId: entry.threadId, workerId: null,
+          input: cleanInput(entry.content), fingerprint: fp, revision: cfg.revision, status: "waiting",
+          advisor: cfg.config.a, aggregator: main, startedAt: Date.now(), finishedAt: null, error: null, advice: null,
+          members: (["a", "b"] as const).map(key => ({ key, advisor: cfg.config[key], workerId: null, status: "waiting",
+            startedAt: null, finishedAt: null, error: null, advice: null })) };
+      }
       saveRun(run); store.put(`queue:${entry.id}`, entry.threadId, "queue", { id: run.id });
       const abort = new AbortController();
       const promise = consult(run, abort.signal).finally(() => active.delete(entry.threadId));
@@ -302,12 +381,17 @@ export default function plugin(bb: BbPluginApi) {
     }
   }
 
+  function validateConfig(config: ReturnType<typeof configSchema.parse>) {
+    advisorFor(config, config.a);
+    if (config.failurePolicy === "reserve" && !config.reserve) throw new Error("Choose a reserve model first.");
+    if (config.reserve && [config.a, config.b].some(slot => sameModel(slot, config.reserve!))) throw new Error("The reserve model must differ from A and B.");
+  }
   async function saveConfig(threadId: string, value: unknown, updatePair = true) {
-    const config = configSchema.parse(value); advisorFor(config, config.a);
+    const config = configSchema.parse(value); validateConfig(config);
     await bb.sdk.threads.get({ threadId });
     if (config.enabled) {
       const { environment, bootstrap } = await routing(threadId);
-      for (const slot of [config.a, config.b]) {
+      for (const slot of [config.a, config.b, ...(config.reserve ? [config.reserve] : [])]) {
         const catalog = await bb.sdk.providers.models({ ...(bootstrap ? { hostId: environment.hostId } : { environmentId: environment.id }), providerId: slot.providerId });
         const model = catalog.models.find(m => m.model === slot.model);
         if (!model) throw new Error(`Model is not available: ${slot.model}`);
@@ -333,9 +417,24 @@ export default function plugin(bb: BbPluginApi) {
     if (!run || run.threadId !== threadId || run.status !== "failed") throw new Error("This failed consultation is no longer available.");
     const entry = (await queue(threadId)).find(e => e.id === run.queueId);
     if (!entry) throw new Error("The message is no longer queued.");
-    store.delete(`queue:${entry.id}`); changed(threadId); await recheck(); return { ok: true };
+    if (run.members && current(run, entry, { ...run.aggregator, model: entry.model })) {
+      const next: Run = { ...run, id: randomUUID(), referenceText: undefined, partial: undefined, status: "waiting", error: null, advice: null, progress: undefined, startedAt: Date.now(), finishedAt: null,
+        members: run.members.map(member => member.status === "ready" ? { ...member } : { ...member, status: "waiting", error: null, advice: null, progress: undefined, startedAt: null, finishedAt: null }) };
+      saveRun(next); store.put(`queue:${entry.id}`, threadId, "queue", { id: next.id });
+    } else store.delete(`queue:${entry.id}`);
+    changed(threadId); await recheck(); return { ok: true };
   }
   bb.rpc.register(rpcContract, {
+    messageIndex: ({ threadId }) => audit.messageIndex(threadId),
+    audit: async ({ threadId, runId }) => ({ ...await audit.detail(threadId, runId), canReplace: !!configured(threadId)?.config.reserve }),
+    replaceParticipant: ({ threadId, runId, key }) => {
+      const run = store.get<Run>(`run:${runId}`);
+      const member = run?.members?.find(m => m.key === key);
+      const control = memberControls.get(`${runId}:${key}`);
+      if (!run || run.threadId !== threadId || !member || member.primaryAdvisor || !control) throw new Error("This participant cannot be replaced now.");
+      if (!configured(threadId)?.config.reserve) throw new Error("Choose a reserve model in MoA settings first.");
+      control.replace = true; control.abort.abort(); return { ok: true };
+    },
     draftDefaults: async ({ projectId }) => {
       const project = await bb.sdk.projects.get({ projectId });
       const defaults = await bb.sdk.projects.defaultExecutionOptions({ projectId });
@@ -355,7 +454,7 @@ export default function plugin(bb: BbPluginApi) {
     },
     prepareDraft: async ({ projectId, config }) => {
       await bb.sdk.projects.get({ projectId });
-      advisorFor(config, config.a);
+      validateConfig(config);
       await saveShared(config);
       const token = randomUUID();
       store.put(`draft:${token}`, projectId, "draft", { config: { ...config, enabled: true }, projectId, threadId: null });
@@ -382,15 +481,7 @@ export default function plugin(bb: BbPluginApi) {
       const result = await bb.sdk.providers.models({ environmentId: environment.id, providerId });
       return result.models.map(m => ({ model: m.model, name: m.displayName, efforts: m.supportedReasoningEfforts.map(e => e.reasoningEffort) }));
     },
-    agents: async ({ threadId, providerId }) => {
-      const { thread, environment } = await routing(threadId);
-      try {
-        return await bb.sdk.plugins.callRpc({ pluginId: "cli-agents", method: "catalog",
-          input: { providerId, hostId: environment.hostId, projectId: thread.projectId, environmentId: environment.id },
-          outputSchema: z.object({ supported: z.boolean(), warnings: z.array(z.string()), agents: z.array(z.object({ id: z.string(), description: z.string() })) }),
-        });
-      } catch { return { supported: false, agents: [], warnings: ["Native agents require the optional CLI Agents plugin and a supported provider."] }; }
-    },
+
   });
   bb.ui.registerMentionProvider({ id: "draft", label: "MoA", search: () => [], resolve: token => {
     if (!store.get<DraftSelection>(`draft:${token}`)) throw new Error("Choose the MoA pair again.");

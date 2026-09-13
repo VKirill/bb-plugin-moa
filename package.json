@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-moa",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.5",
   "type": "module",
   "engines": {
     "bb": ">=0.43.1 <0.44",
@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Mixture of Agents",
-    "description": "Consult a second model before each message. Swap advisor roles automatically and keep per-chat history.",
+    "description": "Two independent advisors before each message, with shared model settings, configurable fallback and per-message history.",
     "branding": {
       "icon": "Workflow"
     },
@@ -86,6 +86,9 @@
     "PLUGIN_OVERVIEW.md",
     "CHANGELOG.md",
     "new-chat.tsx",
-    "draft.ts"
+    "draft.ts",
+    "audit.ts",
+    "history.tsx",
+    "fallback.tsx"
   ]
 }

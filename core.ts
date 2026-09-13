@@ -20,6 +20,12 @@ export function referenceBlock(runId: string, advisor: Slot, advice: string): In
     text: `${MARKER}${runId}]\n${AGGREGATOR_PROMPT}\nAdvisor: ${advisor.providerId}/${advisor.model}\n${JSON.stringify({ advice })}`,
   };
 }
+export function runReference(run: { id: string; advisor: Slot; advice: string | null; referenceText?: string; members?: { key: string; advisor: Slot; advice: string | null; status: string }[] }): Input[number] {
+  if (run.referenceText) return { type: "text", mentions: [], visibility: "agent-only", text: run.referenceText };
+  if (!run.members) return referenceBlock(run.id, run.advisor, run.advice ?? "");
+  return { type: "text", mentions: [], visibility: "agent-only",
+    text: `${MARKER}${run.id}]\n${AGGREGATOR_PROMPT}\nTwo participants were independently asked to analyze this request. Compare their recommendations, resolve disagreements, and form your own final answer. Do not assume agreement makes a claim true. If missingParticipants is nonempty, the user allowed continuation with fewer answers; never claim that a missing participant reviewed this request.\n${JSON.stringify({ missingParticipants: run.members.filter(m => m.status !== "ready").map(m => m.key.toUpperCase()), advisors: run.members.filter(m => m.status === "ready" && m.advice).map(m => ({ participant: m.key.toUpperCase(), providerId: m.advisor.providerId, model: m.advisor.model, advice: m.advice })) })}` };
+}
 export function textOf(input: readonly Input[number][]): string {
   return cleanInput(input).map(b => {
     if (b.type === "text") return b.text;

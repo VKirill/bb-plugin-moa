@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useComposer, useComposerView, useRpc, useRealtime, useRealtimeConnectionState, experimental_ProviderModelPicker as ModelPicker } from "@get-bb/plugin-sdk/app";
 import type { Config, rpcContract } from "./contract";
+import { FallbackSettings, invalidFallback } from "./fallback";
 import { getDraft, subscribeDraft, moaMentions, removeMoa } from "./draft";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -82,23 +83,22 @@ export function NewChatMoA() {
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Mixture of Agents</DialogTitle>
-          <DialogDescription>{t("Enable MoA before the first message. Your current chat model acts and answers; the other participant advises.", "Включи MoA до первого сообщения. Модель чата действует и отвечает, второй участник сначала даёт совет.")}</DialogDescription>
+          <DialogDescription>{t("Enable MoA before the first message. Both participants advise independently; your current chat model acts and answers.", "Включи MoA до первого сообщения. Оба участника сначала дают независимые советы, затем модель чата выполняет работу и отвечает.")}</DialogDescription>
         </DialogHeader>
         {config && hostId ? <>
           <div className="grid gap-3 sm:grid-cols-2">
             {(["a", "b"] as const).map(key => <div key={key} className="rounded-lg border border-border p-3">
               <p className="mb-2 text-sm font-medium">{t("Participant", "Участник")} {key.toUpperCase()}</p>
               <ModelPicker routing={{ kind: "host", hostId }} value={config[key]}
-                onChange={slot => setConfig({ ...config, [key]: { ...slot, agentId: slot.providerId === config[key].providerId ? config[key].agentId : null } })} />
-              {config[key].agentId && <p className="mt-2 text-xs text-muted-foreground">{t("Profile", "Профиль")}: {config[key].agentId}</p>}
+                onChange={slot => setConfig({ ...config, [key]: { ...slot, agentId: null } })} />
             </div>)}
           </div>
-          <p className="text-sm text-muted-foreground">{t("If the chat uses B, A advises. Otherwise B advises. Models and profiles are shared across all chats and projects; enabling MoA applies only to this draft.", "Если в чате выбрана B, советует A. В остальных случаях советует B. Модели и профили общие для всех чатов и проектов; включение MoA относится только к этому черновику.")}</p>
-          <p className="text-xs text-muted-foreground">{t("Saved native profiles are reused where available. You can change them in an existing chat's MoA settings.", "Сохранённые нативные профили используются там, где они доступны. Изменить их можно в настройках MoA существующего чата.")}</p>
+          <p className="text-sm text-muted-foreground">{t("Both A and B analyze every request independently. Models and fallback settings are shared across all chats and projects; enabling MoA applies only to this draft.", "A и B независимо анализируют каждый запрос. Модели и настройки фоллбека общие для всех чатов и проектов; включение MoA относится только к этому черновику.")}</p>
+          <FallbackSettings config={config} onChange={setConfig} picker={<ModelPicker routing={{ kind: "host", hostId }} value={config.reserve ?? config.a} onChange={slot => setConfig({ ...config, reserve: { ...slot, agentId: null } })} />} />
           {same && <p className="text-sm text-destructive">{t("Choose two different models.", "Выбери две разные модели.")}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setOpen(false)}>{t("Cancel", "Отмена")}</Button>
-            <Button disabled={busy || !!same || view.run.isSubmitting} onClick={() => void save()}>{t("Enable for this chat", "Включить для этого чата")}</Button>
+            <Button disabled={busy || !!same || invalidFallback(config) || view.run.isSubmitting} onClick={() => void save()}>{t("Enable for this chat", "Включить для этого чата")}</Button>
           </div>
         </> : !error && <p className="text-sm text-muted-foreground">{t("Loading models…", "Загрузка моделей…")}</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
