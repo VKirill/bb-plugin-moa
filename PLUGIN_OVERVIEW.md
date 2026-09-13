@@ -3,6 +3,8 @@
 Choose a model pair, enable the composer checkbox, and consult a second model before your current BB agent acts and answers.
 
 - Enable MoA before the first message in a new chat.
+- Shared model/profile settings across chats and projects; per-chat enabling.
+- Native runtime/event monitoring; long-wait notices without stopping active models.
 - Native provider/model/reasoning picker and optional CLI Agents profiles.
 - Automatic advisor-role switching when the current model changes.
 - Persistent advisor sessions and inspectable consultation history.

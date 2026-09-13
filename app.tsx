@@ -55,6 +55,11 @@ function RunHistory({ runs, retry }: { runs: RunView[]; retry: (id: string) => v
     {runs.map(run => <details key={run.id} className="rounded-md border border-border p-3 text-sm">
       <summary className="cursor-pointer">{labels[run.status]} · {run.advisor.model} → {run.aggregator.model}</summary>
       <p className="mt-2 text-xs text-muted-foreground">{new Date(run.startedAt).toLocaleString()}</p>
+      {run.status === "running" && run.progress && <p className="mt-2 text-xs text-muted-foreground">
+        {t("BB state", "Состояние BB")}: {run.progress.state} · {Math.floor((run.progress.observedAt - run.startedAt) / 1000)} {t("seconds", "секунд")}.
+        {run.progress.lastEventAt && <> {t("Latest event", "Последнее событие")}: {new Date(run.progress.lastEventAt).toLocaleTimeString()}.</>}
+        {run.progress.overdue && <> {t("Taking longer than the notification threshold. MoA continues waiting; the advisor is not stopped by this timer.", "Превышен порог уведомления. MoA продолжает ждать; этот таймер не останавливает советника.")}</>}
+      </p>}
       {run.error && <p role="alert" className="mt-2 text-destructive">{run.error}</p>}
       {run.advice && <p className="mt-2 whitespace-pre-wrap break-words">{run.advice}</p>}
       <div className="mt-2 flex gap-2">
@@ -87,7 +92,7 @@ export function MoAControl() {
   useEffect(() => { setState(null); setOpen(false); setError(null); void refresh(); }, [refresh]);
   useEffect(() => { if (connection === "connected") void refresh(); }, [connection, refresh]);
   useRealtime("changed", payload => {
-    if (payload && typeof payload === "object" && "threadId" in payload && payload.threadId === threadId) void refresh();
+    if (payload && typeof payload === "object" && (("global" in payload && payload.global) || ("threadId" in payload && payload.threadId === threadId))) void refresh();
   });
   function settings(enable = false) {
     if (!state) return;
@@ -118,6 +123,7 @@ export function MoAControl() {
         onCheckedChange={checked => void toggle(checked === true)} />
       <span>MoA</span>
       {consulting && <Icon name="Spinner" className="size-3 animate-spin" />}
+      {consulting && latest?.progress?.overdue && <span className="text-muted-foreground" title={t("Long consultation: open settings for the advisor's state and history", "Долгая консультация: состояние и история советника доступны в настройках")}>{t("Waiting", "Ожидаем")}</span>}
     </label>
     <Button type="button" variant="ghost" size="icon" className="size-7" disabled={!state}
       aria-label={t("MoA settings and history", "Настройки и история MoA")} onClick={() => settings()}>
@@ -136,15 +142,17 @@ export function MoAControl() {
             <SlotEditor label={t("Participant B", "Участник B")} slot={draft.b} onChange={b => setDraft({ ...draft, b })} threadId={threadId} environmentId={state.environmentId} />
           </div>
           <p className="text-sm text-muted-foreground">{t("If the chat uses B, A advises. Otherwise B advises. Advisor history is kept for this chat.", "Если в чате выбрана B, советует A. В остальных случаях советует B. История советника сохраняется для этого чата.")}</p>
+          <p className="text-sm text-muted-foreground">{t("Models, profiles and timeout are shared across all chats and projects. Enabling MoA applies only to this chat.", "Модели, профили и время ожидания общие для всех чатов и проектов. Включение MoA относится только к этому чату.")}</p>
           {same(draft.a, draft.b) && <p className="text-sm text-destructive">{t("Choose two different models.", "Выбери две разные модели.")}</p>}
           <label className="flex items-center gap-2 text-sm">
             <Checkbox checked={draft.enabled} onCheckedChange={enabled => setDraft({ ...draft, enabled: enabled === true })} />
             {t("Enable MoA for this chat", "Включить MoA для этого чата")}
           </label>
-          <label className="flex items-center gap-3 text-sm">{t("Advisor timeout (seconds)", "Ожидание советника (секунд)")}
+          <label className="flex items-center gap-3 text-sm">{t("Long-wait notice after (seconds)", "Сообщить о долгом ожидании через (секунд)")}
             <input type="number" min={30} max={900} className="w-24 rounded-md border border-input bg-background p-2"
               value={draft.timeoutSeconds} onChange={e => setDraft({ ...draft, timeoutSeconds: Number(e.target.value) })} />
           </label>
+          <p className="text-xs text-muted-foreground">{t("This is a notification threshold, not a time limit for an active model. MoA waits for completion or an explicit BB error. You can cancel the queued message or turn MoA off.", "Это порог уведомления, а не ограничение работы активной модели. MoA ждёт завершения или явной ошибки BB. Можно отменить сообщение в очереди или выключить MoA.")}</p>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setOpen(false)}>{t("Close", "Закрыть")}</Button>
@@ -161,6 +169,14 @@ export function MoAControl() {
   </div>;
 }
 export default definePluginApp(app => {
+  app.contentScripts.register({ id: "hide-draft-marker", mount() {
+    const style = document.createElement("style");
+    style.dataset.bbMoa = "draft-marker";
+    const chip = `[data-prompt-mention-resource*='"pluginId":"moa"'][data-prompt-mention-resource*='"itemId":"draft:']`;
+    style.textContent = `${chip}, .node-mention:has(> ${chip}) { display: none !important; }`;
+    document.head.append(style);
+    return () => style.remove();
+  } });
   app.composer.customize({ id: "moa", scopes: ["thread", "new-thread"], actions: [{ id: "toggle", component: ComposerMoA }],
     banners: [{ id: "compact-toggle", chrome: "bare", component: CompactControl }], richText: { onDraftChange: observeDraft } });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeMessageDispatchHookContext, makeQueueEntry, makeThreadResponse,
   experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
@@ -9,7 +9,7 @@ const b = { ...a, model: "b" };
 const config: Config = { a, b, enabled: true, timeoutSeconds: 30 };
 const text = (value: string): Input[number] => ({ type: "text", text: value, mentions: [] });
 const disposers: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
+afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.restoreAllMocks(); });
 async function eventually(check: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 4000;
   while (!(await check())) { if (Date.now() > deadline) throw new Error("Condition not reached"); await new Promise(r => setTimeout(r, 15)); }
@@ -42,6 +42,7 @@ async function setup(configure = true) {
   stub("threads.spawn", async () => { workerSeq++; return worker; });
   stub("threads.send", async () => { workerSeq++; return {}; });
   stub("threads.output", async () => output());
+  stub("threads.events.list", async () => []);
   stub("threads.stop", async () => ({ ok: true }));
   stub("threads.archive", async () => ({}));
   stub("providers.models", async () => ({ models: [a, b].map(s => ({ model: s.model, supportedReasoningEfforts: [{ reasoningEffort: "medium" }] })) }));
@@ -217,6 +218,82 @@ describe("delivery gate and durable consultations", () => {
     f.harness.inspection.sdk.stub("projects.get", async () => ({ id: "project", kind: "standard", sources: [] }));
     await f.harness.behavior.callRpc("toggle", { threadId: "parent", enabled: false });
     expect((await f.hook()(ctx)).action).toBe("proceed");
+  });
+  it("shares models, profiles and timeout across existing chats and project drafts, keeping toggles local", async () => {
+    const f = await setup();
+    f.entries = [];
+    f.harness.inspection.sdk.stub("projects.defaultExecutionOptions", async () => null);
+    const other = await f.harness.behavior.callRpc("status", { threadId: "other" }) as { config: Config };
+    expect(other.config).toEqual({ ...config, enabled: false });
+    await f.harness.behavior.callRpc("toggle", { threadId: "other", enabled: true });
+    const pair = { ...config, a: { ...b, agentId: "researcher" }, b: a, timeoutSeconds: 300, enabled: false };
+    await f.harness.behavior.callRpc("save", { threadId: "other", config: pair });
+    expect((await f.harness.behavior.callRpc("status", { threadId: "parent" }) as { config: Config }).config).toEqual({ ...pair, enabled: true });
+    expect((await f.harness.behavior.callRpc("draftDefaults", { projectId: "another-project" }) as { config: Config }).config).toEqual(pair);
+    await f.harness.behavior.callRpc("toggle", { threadId: "parent", enabled: false });
+    expect((await f.harness.behavior.callRpc("status", { threadId: "other" }) as { config: Config }).config).toEqual(pair);
+  });
+  it("uses the latest shared pair for an older draft and preserves native profile routing on first submission", async () => {
+    const f = await setup(false); f.parent.environmentId = null;
+    const { token } = await f.harness.behavior.callRpc("prepareDraft", { projectId: "project", config }) as { token: string };
+    const updated = { ...config, b: { ...b, agentId: "researcher" } };
+    await f.harness.behavior.callRpc("prepareDraft", { projectId: "another-project", config: updated });
+    expect(await f.harness.behavior.callRpc("readDraft", { token })).toEqual(updated);
+    f.harness.inspection.sdk.stub("plugins.callRpc", async () => ({ token: "11111111-1111-4111-8111-111111111111", label: "researcher" }));
+    const base = f.context([text(`[bb-moa-draft:${token}]`)]);
+    const ctx = { ...base, project: { ...base.project, id: "project" }, host: { ...base.host!, id: "host" } };
+    expect((await f.hook()(ctx)).action).toBe("wait");
+    f.start(); await eventually(() => f.entries[0].content.length === 2);
+    expect((await f.runs())[0].advisor.agentId).toBe("researcher");
+    const calls = JSON.stringify(f.harness.inspection.sdk.callsTo("plugins.callRpc"));
+    expect(calls).toContain('"hostId":"host"');
+    expect(calls).toContain('"projectId":"project"');
+    expect(calls).not.toContain('"environmentId"');
+  });
+  it("invalidates ready advice in another chat when the shared pair changes", async () => {
+    const f = await setup(); f.start();
+    await eventually(() => f.entries[0].content.length === 2);
+    await f.harness.behavior.callRpc("save", { threadId: "other", config: { ...config, b: { ...b, agentId: "researcher" } } });
+    f.harness.inspection.sdk.stub("plugins.callRpc", async () => ({ token: "11111111-1111-4111-8111-111111111111", label: "researcher" }));
+    expect(f.entries[0].content).toEqual([text("Question one")]);
+    expect((await f.hook()(f.context())).action).toBe("wait");
+    await eventually(async () => (await f.runs())[0]?.advisor.agentId === "researcher" && f.entries[0].content.length === 2);
+  });
+  it("keeps a silent active advisor running beyond 2040 seconds and accepts its eventual answer", async () => {
+    const f = await setup(); f.worker.status = "active"; f.worker.runtime.displayStatus = "active";
+    let now = Date.now(); vi.spyOn(Date, "now").mockImplementation(() => now);
+    f.start(); await eventually(async () => !!(await f.runs())[0]?.progress);
+    now += 2041 * 1000;
+    await eventually(async () => !!(await f.runs())[0]?.progress?.overdue);
+    expect((await f.runs())[0].status).toBe("running");
+    expect(f.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(0);
+    f.worker.status = "idle"; f.worker.runtime.displayStatus = "idle";
+    await eventually(() => f.entries[0].content.length === 2);
+    expect((await f.hook()(f.context())).action).toBe("proceed");
+    expect(f.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(1);
+  });
+  it("lets the user cancel a long pending consultation without delivering late advice", async () => {
+    const f = await setup(); f.worker.status = "pending"; f.worker.runtime.displayStatus = "pending";
+    let now = Date.now(); vi.spyOn(Date, "now").mockImplementation(() => now);
+    f.start(); await eventually(async () => !!(await f.runs())[0]?.progress);
+    now += 3600 * 1000;
+    await eventually(async () => !!(await f.runs())[0]?.progress?.overdue);
+    expect(f.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(0);
+    await f.harness.behavior.callRpc("toggle", { threadId: "parent", enabled: false });
+    await eventually(() => f.harness.inspection.sdk.callsTo("threads.stop").length === 1);
+    expect((await f.hook()(f.context())).action).toBe("proceed");
+    expect(f.entries[0].content).toHaveLength(1);
+  });
+  it("does not interrupt an active advisor when only its notice threshold is saved", async () => {
+    const f = await setup(); f.worker.status = "active"; f.worker.runtime.displayStatus = "active";
+    f.start(); await eventually(async () => !!(await f.runs())[0]?.progress);
+    const runId = (await f.runs())[0].id;
+    await f.harness.behavior.callRpc("save", { threadId: "parent", config: { ...config, timeoutSeconds: 900 } });
+    expect(f.harness.inspection.sdk.callsTo("threads.stop")).toHaveLength(0);
+    f.worker.status = "idle"; f.worker.runtime.displayStatus = "idle";
+    await eventually(() => f.entries[0].content.length === 2);
+    expect((await f.runs())[0].id).toBe(runId);
+    expect((await f.hook()(f.context())).action).toBe("proceed");
   });
   it("uses only public SDK imports", async () => {
     const result = await experimental_scanPublicSdkOnly(process.cwd(), { allow: [

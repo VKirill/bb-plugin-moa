@@ -35,6 +35,7 @@ export function boundedContext(text: string, max = 60000): string {
 export function safeError(error: unknown): string {
   // Never persist a provider exception body: it can contain the prompt or credentials.
   const text = error instanceof Error ? error.message : String(error);
+  if (/stopped without a final answer/i.test(text)) return "Advisor stopped without a final answer. Inspect its history, then retry or turn MoA off.";
   if (/timeout|timed out/i.test(text)) return "Advisor timed out. Retry or turn MoA off to send normally.";
   if (/rate.?limit|quota/i.test(text)) return "Advisor reached a provider limit. Retry later or turn MoA off.";
   if (/abort|cancel/i.test(text)) return "Consultation cancelled.";

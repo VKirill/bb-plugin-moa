@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useComposer, useComposerView, useRpc, experimental_ProviderModelPicker as ModelPicker } from "@get-bb/plugin-sdk/app";
+import { useComposer, useComposerView, useRpc, useRealtime, useRealtimeConnectionState, experimental_ProviderModelPicker as ModelPicker } from "@get-bb/plugin-sdk/app";
 import type { Config, rpcContract } from "./contract";
 import { getDraft, subscribeDraft, moaMentions, removeMoa } from "./draft";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,11 @@ export function NewChatMoA() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sharedRevision, setSharedRevision] = useState(0);
+  const connection = useRealtimeConnectionState();
+  useRealtime("changed", payload => {
+    if (payload && typeof payload === "object" && "global" in payload && payload.global) setSharedRevision(value => value + 1);
+  });
   useEffect(() => {
     let live = true;
     setConfig(null); setHostId(null); setError(null);
@@ -36,7 +41,7 @@ export function NewChatMoA() {
       } catch (cause) { if (live) setError(cause instanceof Error ? cause.message : "Could not load MoA."); }
     })();
     return () => { live = false; };
-  }, [projectId, token, rpc]);
+  }, [projectId, token, rpc, sharedRevision, connection]);
   useEffect(() => { setOpen(false); }, [projectId]);
   function remove() {
     composer.updateText(text => removeMoa(text, getDraft().draft));
@@ -84,11 +89,12 @@ export function NewChatMoA() {
             {(["a", "b"] as const).map(key => <div key={key} className="rounded-lg border border-border p-3">
               <p className="mb-2 text-sm font-medium">{t("Participant", "Участник")} {key.toUpperCase()}</p>
               <ModelPicker routing={{ kind: "host", hostId }} value={config[key]}
-                onChange={slot => setConfig({ ...config, [key]: { ...slot, agentId: null } })} />
+                onChange={slot => setConfig({ ...config, [key]: { ...slot, agentId: slot.providerId === config[key].providerId ? config[key].agentId : null } })} />
+              {config[key].agentId && <p className="mt-2 text-xs text-muted-foreground">{t("Profile", "Профиль")}: {config[key].agentId}</p>}
             </div>)}
           </div>
-          <p className="text-sm text-muted-foreground">{t("If the chat uses B, A advises. Otherwise B advises. This pair is saved with the new chat.", "Если в чате выбрана B, советует A. В остальных случаях советует B. Пара сохранится в новом чате.")}</p>
-          <p className="text-xs text-muted-foreground">{t("Native advisor profiles can be selected after the workspace is created.", "Нативные профили советников можно выбрать после создания рабочей папки чата.")}</p>
+          <p className="text-sm text-muted-foreground">{t("If the chat uses B, A advises. Otherwise B advises. Models and profiles are shared across all chats and projects; enabling MoA applies only to this draft.", "Если в чате выбрана B, советует A. В остальных случаях советует B. Модели и профили общие для всех чатов и проектов; включение MoA относится только к этому черновику.")}</p>
+          <p className="text-xs text-muted-foreground">{t("Saved native profiles are reused where available. You can change them in an existing chat's MoA settings.", "Сохранённые нативные профили используются там, где они доступны. Изменить их можно в настройках MoA существующего чата.")}</p>
           {same && <p className="text-sm text-destructive">{t("Choose two different models.", "Выбери две разные модели.")}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setOpen(false)}>{t("Cancel", "Отмена")}</Button>

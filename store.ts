@@ -3,7 +3,8 @@ import type { Config, RunView } from "./contract";
 import type { Input } from "./core";
 
 export type ThreadConfig = { config: Config; revision: number };
-export type Run = RunView & { fingerprint: string; revision: number; input: Input; queueId: string };
+export type SharedSettings = { settings: Omit<Config, "enabled">; revision: number };
+export type Run = RunView & { fingerprint: string; revision: number | string; input: Input; queueId: string };
 export type Session = { workerId: string; cursor: number; environmentId: string };
 export type DraftSelection = { config: Config; projectId: string; threadId: string | null };
 export type Bootstrap = { hostId: string; main: Config["a"] };

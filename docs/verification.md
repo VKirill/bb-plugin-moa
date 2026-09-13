@@ -60,3 +60,16 @@ First-message native-profile execution and creating a new machine are outside
 this beta's verified scope. The first advisor uses a source checkout and text
 context, while the main agent keeps the user's requested workspace. No separate
 worktree is created just for the advisor.
+
+
+## Beta.3 — shared settings, hidden marker and long consultations (2026-09-13)
+
+Typecheck, build and 34 tests pass on BB 0.43.1 / SDK 0.4.87. New cases cover cross-chat/project model/profile sharing with independent enable flags, older draft binding to current shared settings, first-message profile routing, invalidation of another chat's ready advice, and content-script isolation/disposal.
+
+Using a controlled clock, a silent active advisor stayed running after 2041 seconds and its eventual answer passed the delivery gate. A pending advisor stayed running after 3600 seconds and could still be cancelled by disabling MoA. Saving only the notice threshold did not stop or replace the running advisor. These are deterministic lifecycle simulations, not 34/60-minute live provider calls.
+
+An initial new sharing test expected role reversal when swapping both slots; that expectation was incorrect because the main model also changed its matching slot. The test now changes the native profile and verifies actual consultation invalidation/replacement. Earlier failure evidence is retained in the task history.
+
+The live path installation was reloaded only after the plugin-held queue was empty. Four existing chats across projects returned the same selected models/efforts, retaining their different enable flags. In a real new-chat composer, saved shared models appeared, enabling retained the structured draft mention while both its native chip and wrapper had display:none. Browser screenshot inspection confirmed the checkbox remained visible with no chip in the text field. No model request was submitted for this UI check.
+
+Native profile first-message routing is covered by the SDK harness, not a live profile invocation. Native BB runtime state and event timestamps are observations, not proof that a remote provider is making useful progress. MoA's threshold no longer cancels active work; BB/provider watchdogs and explicit user actions retain their separate behavior.

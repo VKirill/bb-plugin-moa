@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { fireEvent, waitFor } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { loadPluginApp, mountPluginContentScripts, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { Config } from "../contract";
 beforeAll(() => {
   window.matchMedia = vi.fn().mockImplementation(() => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
@@ -63,4 +63,19 @@ it("offers MoA in a new chat and carries its selection with the draft", async ()
   expect(slot.inspection.composer.text).toContain("First question");
   expect(slot.inspection.composer.attachmentCount).toBe(1);
   expect(slot.inspection.composer.submits).toHaveLength(0);
+});
+
+it("hides only the MoA draft chip and removes its styling on disposal", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const scripts = await mountPluginContentScripts(app, { pluginId: "moa", generation: 1 });
+  const own = document.createElement("span"), other = document.createElement("span");
+  own.dataset.promptMentionResource = JSON.stringify({ pluginId: "moa", itemId: "draft:token" });
+  other.dataset.promptMentionResource = JSON.stringify({ pluginId: "cli-agents", itemId: "draft:token" });
+  document.body.append(own, other);
+  try {
+    expect(getComputedStyle(own).display).toBe("none");
+    expect(getComputedStyle(other).display).not.toBe("none");
+    await scripts.lifecycle.dispose();
+    expect(document.querySelector('style[data-bb-moa="draft-marker"]')).toBeNull();
+  } finally { own.remove(); other.remove(); await scripts.lifecycle.dispose(); }
 });

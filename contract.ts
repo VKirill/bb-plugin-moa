@@ -23,6 +23,10 @@ export const runSchema = z.object({
   advisor: slotSchema, aggregator: slotSchema,
   startedAt: z.number(), finishedAt: z.number().nullable(),
   error: z.string().nullable(), advice: z.string().nullable(),
+  progress: z.object({
+    state: z.string(), observedAt: z.number(), lastEventAt: z.number().nullable(),
+    lastEventType: z.string().nullable(), overdue: z.boolean(),
+  }).optional(),
 });
 export type RunView = z.infer<typeof runSchema>;
 const threadInput = z.object({ threadId: z.string().min(1).max(200) });

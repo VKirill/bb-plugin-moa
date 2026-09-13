@@ -2,14 +2,14 @@
 
 Consult a second model before each message, then let your current chat agent act and answer. MoA adds a per-chat checkbox, a native model-pair picker, automatic advisor-role switching, and persistent consultation history.
 
-**Status:** 0.1.0-beta.2 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
+**Status:** 0.1.0-beta.3 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
 
 ## Use
 
 1. Open a new or existing chat.
 2. Click the settings button next to **MoA** in the composer.
 3. Choose two different provider/model combinations, A and B. BB's picker also selects reasoning and supported service tier.
-4. Save and enable MoA. In a new chat, a **MoA** chip is added to this draft; keep it with the first question. Each normal submission waits for the advisor before the original request and private reference context reach your current agent.
+4. Save and enable MoA. Models, native profiles and the long-wait notice threshold are shared across all chats and projects; the checkbox stays local to each chat. In a new chat, the first-message selection is carried in hidden draft metadata; the checkbox is the visible control. Each normal submission waits for the advisor before the original request and private reference context reach your current agent.
 5. Uncheck MoA to resume ordinary delivery. Re-enabling continues saved advisor history and supplies intervening conversation updates.
 
 If the current model matches B, A advises. Otherwise B advises. The current model remains the aggregator and keeps its native agent identity. Optional per-slot agent/profile selections apply when that slot serves as advisor and require the separate **CLI Agents** plugin.
@@ -40,9 +40,17 @@ Plugin state and consultation records use the plugin's SQLite database in BB-man
 - Original files, images and mentions are preserved for the main agent. Advisors get text and labelled attachment references; they do not automatically inspect file contents or image pixels.
 - Role switching compares exact provider/model IDs. Two profiles of the same model do not form a pair. Changing a slot's profile, effort or service tier creates its own advisory session.
 - CLI Agents is optional and provider-dependent. Live model routing/session reuse has been checked with Codex Luna/Sol; other providers need their own login and validation.
-- New chats can opt in before the first message. Selection belongs to the draft, not all tabs or future chats. Removing the MoA chip or unchecking MoA returns that draft to ordinary mode. Side-chat composers do not opt in.
+- New chats can opt in before the first message. Selection belongs to the draft, not all tabs or future chats. Unchecking MoA returns that draft to ordinary mode. A lifecycle-scoped content script hides only the plugin's native draft chip; other mentions are unaffected (verified against BB 0.43.1). Side-chat composers do not opt in.
 - Before the main workspace exists, the first advisor runs in the project checkout on the machine resolved from the actual submission (a personal workspace only for an unfiled chat). Its thread is retained after the main workspace is provisioned. This requires an existing host and a project source on that host. The main workspace selection is preserved, including a separately requested worktree.
-- The new-chat picker discovers models using the project's default machine (or BB primary machine for an unfiled chat); the advisor model is validated on the actual submission machine before launch. Native advisor profiles can be selected after the main workspace exists. The last saved pair is offered as a preset, with MoA off.
+- The new-chat picker discovers models using the project's default machine (or BB primary machine for an unfiled chat); the advisor model is validated on the actual submission machine before launch. Shared native profiles are preserved on first-message routing, using the actual host/project before an environment exists. Profiles can be edited in existing-chat settings and must be available on the target machine. Shared settings are offered with MoA off for each new chat.
+
+## Long consultations
+
+`timeoutSeconds` is retained for compatibility but now means the **long-wait notice threshold**, not an active-model deadline. The coordinator observes the native thread/runtime state and latest event every three seconds. The history panel shows elapsed time, state and latest event time; the composer adds a waiting notice after the threshold.
+
+Active, starting, pending, reconnecting and queued/background work is allowed to continue beyond the threshold, including silent reasoning. MoA accepts a fresh answer after the worker is idle with no queued or background-agent work. Explicit provider errors surface as failures; an idle worker with no new answer after the threshold also fails. Missing progress text alone does not establish a hang. BB/provider watchdogs retain their own behavior.
+
+Users can disable MoA, cancel the queued message or explicitly Send now. Changing the notice threshold keeps the current consultation running. Changing the shared pair invalidates pending advice; plugin reload currently interrupts running consultations and requires an explicit retry. Do not reload during live advisory work.
 
 ## Install from a checkout
 
