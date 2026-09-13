@@ -3,7 +3,8 @@ import type { BbPluginApi, MessageDispatchHookContext } from "@get-bb/plugin-sdk
 import { z } from "zod";
 import { configSchema, rpcContract, runSchema, type Slot } from "./contract";
 import { advisorFor, boundedContext, cleanInput, hash, runReference, sameModel, safeError, textOf, type Input } from "./core";
-import { ADVISOR_PROMPT } from "./prompts";
+import { hasFileGateway, advisorInput } from "./file-access";
+import { fileAccessPolicy, ADVISOR_PROMPT } from "./prompts";
 import { createAudit } from "./audit";
 import { createStore, type Run, type Session, type ThreadConfig, type DraftSelection, type Bootstrap, type SharedSettings, type Member } from "./store";
 
@@ -189,11 +190,14 @@ export default function plugin(bb: BbPluginApi) {
         const worker = await bb.sdk.threads.get({ threadId: session.workerId }).catch(() => null);
         if (!worker || worker.deletedAt || worker.archivedAt) session = null;
       }
+      stage = "Checking file access";
+      member.fileGateway = await hasFileGateway(bb, signal);
       stage = "Reading conversation history";
       const timeline = await bb.sdk.threads.timeline({ threadId: run.threadId, segmentLimit: "50" });
       const rows = timeline.rows.filter(row => row.kind === "conversation" && row.sourceSeqEnd > (session?.cursor ?? 0));
       const history = boundedContext(rows.map(row => row.kind === "conversation" ? `${row.role}: ${row.text}` : "").join("\n\n"));
-      const prompt = `${ADVISOR_PROMPT}\n\nCanonical conversation updates (may be a bounded recent window):\n${history || "No new completed messages."}\n\nCurrent user request:\n${boundedContext(textOf(run.input), 30000)}`;
+      const prompt = `${ADVISOR_PROMPT}\n\n${fileAccessPolicy(member.fileGateway, environment.hostId)}\n\nCanonical conversation updates (may be a bounded recent window):\n${history || "No new completed messages."}\n\nCurrent user request:\n${boundedContext(textOf(run.input), 30000)}`;
+      const input = advisorInput(prompt, run.input, member.fileGateway);
       if (signal.aborted || shutdown.signal.aborted) return;
       member.status = "running"; saveMember();
       stage = "Starting advisor session";
@@ -201,20 +205,20 @@ export default function plugin(bb: BbPluginApi) {
         workerId = session.workerId;
         baseline = (await bb.sdk.threads.timeline({ threadId: workerId, segmentLimit: "5" })).maxSeq;
         member.workerId = workerId; saveMember();
-        member.advisorInput = prompt; saveMember();
-        await bb.sdk.threads.send({ threadId: workerId, mode: "auto", input: [{ type: "text", text: prompt, mentions: [] }],
-          model: member.advisor.model, reasoningLevel: member.advisor.reasoningLevel, serviceTier: member.advisor.serviceTier, permissionMode: "accept-edits" });
+        member.advisorInput = input.map(b => b.type === "text" ? b.text : "").join("\n\n"); saveMember();
+        await bb.sdk.threads.send({ threadId: workerId, mode: "auto", input,
+          model: member.advisor.model, reasoningLevel: member.advisor.reasoningLevel, serviceTier: member.advisor.serviceTier, permissionMode: run.permissionMode ?? "accept-edits" });
       } else {
         if (signal.aborted || shutdown.signal.aborted) return;
-        member.advisorInput = prompt; saveMember();
+        member.advisorInput = input.map(b => b.type === "text" ? b.text : "").join("\n\n"); saveMember();
         const worker = await bb.sdk.threads.spawn({
           projectId: thread.projectId, environment: spawnEnvironment,
           providerId: member.advisor.providerId, model: member.advisor.model, reasoningLevel: member.advisor.reasoningLevel, serviceTier: member.advisor.serviceTier,
-          permissionMode: "accept-edits", visibility: "hidden", title: `MoA advisor · ${member.advisor.model}`,
+          permissionMode: run.permissionMode ?? "accept-edits", visibility: "hidden", title: `MoA advisor · ${member.advisor.model}`,
           // No parentThreadId: BB auto-notifies parents on child completion, which would
           // deliver an unsolicited second message. The relationship is plugin-owned.
           pluginMetadata: { parentThreadId: thread.id, role: "advisor", participant: member.key },
-          prompt: prompt,
+          input,
         });
         workerId = worker.id; member.workerId = workerId; saveMember();
         session = { workerId, cursor: 0, environmentId: environment.id };
@@ -369,7 +373,7 @@ export default function plugin(bb: BbPluginApi) {
       if (run && run.fingerprint !== fp) { run.status = "cancelled"; run.finishedAt = Date.now(); saveRun(run); }
       if (!(run?.members && run.status === "waiting" && run.fingerprint === fp && run.revision === cfg.revision)) {
         run = { id: randomUUID(), queueId: entry.id, threadId: entry.threadId, workerId: null,
-          input: cleanInput(entry.content), fingerprint: fp, revision: cfg.revision, status: "waiting",
+          input: cleanInput(entry.content), permissionMode: entry.permissionMode, fingerprint: fp, revision: cfg.revision, status: "waiting",
           advisor: cfg.config.a, aggregator: main, startedAt: Date.now(), finishedAt: null, error: null, advice: null,
           members: (["a", "b"] as const).map(key => ({ key, advisor: cfg.config[key], workerId: null, status: "waiting",
             startedAt: null, finishedAt: null, error: null, advice: null })) };

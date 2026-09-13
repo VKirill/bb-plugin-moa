@@ -1,3 +1,12 @@
+# 0.1.0-beta.6
+
+- Allow advisors to inspect relevant local files and use the optional File Gateway for external reads.
+- Detect enabled/running File Gateway before each attempt, including reused sessions and fallback. Missing/disabled/unhealthy gateway keeps consultations in local-only mode.
+- Preserve native gateway file mentions via BB input blocks, keeping exact sources and paths without importing gateway internals.
+- Support native tools and the public CLI across providers. Keep write/copy/configuration and bypass operations prohibited.
+- Inherit the queued message's permission mode instead of forcing manual command approvals on advisors.
+- Record gateway availability per attempt; actual tool reads remain visible in the participant transcript.
+
 # 0.1.0-beta.5
 
 - Run both configured participants independently in parallel, then deliver both references to the acting chat model.

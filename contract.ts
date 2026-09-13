@@ -29,7 +29,7 @@ export const attemptSchema = z.object({
   advisor: slotSchema, workerId: z.string().nullable(),
   status: z.enum(["waiting", "running", "ready", "failed", "cancelled"]),
   startedAt: z.number().nullable(), finishedAt: z.number().nullable(),
-  error: z.string().nullable(), advice: z.string().nullable(), progress: progressSchema.optional(),
+  error: z.string().nullable(), advice: z.string().nullable(), fileGateway: z.boolean().optional(), progress: progressSchema.optional(),
 });
 export const memberSchema = attemptSchema.extend({
   key: z.enum(["a", "b"]), primaryAdvisor: slotSchema.optional(), attempts: z.array(attemptSchema).optional(),

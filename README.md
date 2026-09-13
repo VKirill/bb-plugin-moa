@@ -2,7 +2,7 @@
 
 A and B independently analyze each message in parallel. Your current chat model receives both answers, evaluates them and performs the task. MoA adds a compact per-chat checkbox, shared model settings, configurable fallback and per-message consultation history.
 
-**Status:** 0.1.0-beta.5 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
+**Status:** 0.1.0-beta.6 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
 
 ## Use
 
@@ -35,9 +35,9 @@ Plugin state and consultation records use the plugin's SQLite database in BB-man
 
 - **BB's explicit Send now is an override:** it bypasses dispatch hooks and can send without advice. MoA records this as bypassed. Disabling/uninstalling the plugin also releases BB's plugin-held waits. This is not an unbypassable provider-level interceptor.
 - Consultation runs once per user submission, not every internal tool iteration. It increases latency and provider usage.
-- Advisors are instructed not to use tools or perform actions. Native sessions still have provider capabilities: this is an advisory role, **not a universal read-only sandbox**. The main agent retains its normal permissions.
+- Advisors may inspect relevant local files and, when File Gateway is running, remote files through its hosts/list/read operations. Writes, uploads, copies, project execution and unrelated actions remain prohibited by role instructions. Native provider capabilities still exist: this is **not a universal read-only sandbox**. File Gateway enforces its own access policy.
 - Initial context is a bounded recent window: up to 50 timeline segments, trimmed to 60,000 characters. Long histories may be incomplete.
-- Original files, images and mentions are preserved for the main agent. Advisors get text and labelled attachment references; they do not automatically inspect file contents or image pixels.
+- Original files, images and mentions are preserved for the main agent. Advisors receive labelled attachment references; file contents are read on demand, not automatically injected. When File Gateway is running, its native mentions are forwarded intact through BB, preserving exact source identity. Other plugin selection mentions are not forwarded. Image pixels are not automatically supplied.
 - A and B must have different provider/model IDs. Changing a slot's effort or service tier creates its own advisory session.
 - New chats can opt in before the first message. Selection belongs to the draft, not all tabs or future chats. Unchecking MoA returns that draft to ordinary mode. A lifecycle-scoped content script hides only the plugin's native draft chip; other mentions are unaffected (verified against BB 0.43.1). Side-chat composers do not opt in.
 - Before the main workspace exists, the first advisor runs in the project checkout on the machine resolved from the actual submission (a personal workspace only for an unfiled chat). Its thread is retained after the main workspace is provisioned. This requires an existing host and a project source on that host. The main workspace selection is preserved, including a separately requested worktree.
@@ -56,6 +56,16 @@ The lookup scans the latest 500 outgoing user requests in each involved thread. 
 Active, starting, pending, reconnecting and queued/background work is allowed to continue beyond the threshold, including silent reasoning. MoA accepts a fresh answer after the worker is idle with no queued or background-agent work. Explicit provider errors surface as failures; an idle worker with no new answer after the threshold also fails. Missing progress text alone does not establish a hang. BB/provider watchdogs retain their own behavior.
 
 Users can disable MoA, cancel the queued message or explicitly Send now. Changing the notice threshold keeps the current consultation running. Changing the shared pair invalidates pending advice; plugin reload currently interrupts running consultations and requires an explicit retry. Do not reload during live advisory work.
+
+## Optional File Gateway
+
+MoA checks `bb.sdk.plugins.list` before each participant attempt. External reads are permitted only when plugin ID `file-gateway` is enabled and running. Absence, disabled/error state or discovery failure selects an explicit local-only policy; MoA continues without a hard dependency or auto-installation.
+
+Advisors use the native `bb_file_gateway` tool, or the public `bb file-gateway hosts|list|read` CLI if their provider does not expose that tool. Source IDs and paths are preserved by forwarding native gateway mentions in BB input blocks; MoA does not decode gateway IDs, import its internals or bypass its resolver. The same route supports other enrolled BB hosts and gateway-configured website sources. Reads honor the gateway's permissions and limits. No SSH/HTTP/alternative-connector fallback is allowed when gateway access fails.
+
+Advisors inherit the original queued message's BB permission mode; manual approvals are not silently widened. In manual mode a provider may wait for approval before a gateway command.
+
+Each attempt records whether File Gateway was available; this appears in the consultation modal. Actual reads and results remain in its native session transcript. Availability is not proof of a successful read. Reused sessions receive the current policy on every question, including after installation/removal of the optional plugin; old session history is retained. No host IDs, file paths or credentials are hard-coded in the package.
 
 ## Fallback
 

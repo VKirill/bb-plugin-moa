@@ -406,3 +406,35 @@ describe("independent participants and fallback", () => {
     await expect(f.harness.behavior.callRpc("save", { threadId: "parent", config: { ...config, failurePolicy: "reserve", reserve: a } })).rejects.toThrow("differ");
   });
 });
+
+describe("optional File Gateway integration", () => {
+  it("rechecks gateway availability for reused sessions and preserves native mentions", async () => {
+    const f = await setup(); let available = true;
+    f.harness.inspection.sdk.stub("plugins.list", async () => ({ plugins: available ? [{ id: "file-gateway", enabled: true, status: "running" }] : [] }));
+    const resource = { kind: "plugin" as const, pluginId: "file-gateway", itemId: 'files:remote-reference', label: 'Remote file' };
+    f.entries[0].content = [{ type: "text", text: "Remote file", mentions: [{ start: 0, end: 11, resource }] }];
+    f.start(); await eventually(() => f.entries[0].content.length === 2);
+    expect((await f.runs())[0].members?.map(m => m.fileGateway)).toEqual([true, true]);
+    const spawned = JSON.stringify(f.harness.inspection.sdk.callsTo("threads.spawn"));
+    expect(spawned).toContain('files:remote-reference'); expect(spawned).toContain('bb file-gateway read');
+    const first = f.entries[0]; f.entries = [];
+    await f.harness.behavior.emitThreadEvent("message.dispatched", { entry: first });
+    available = false; f.advanceParent();
+    f.entries = [makeQueueEntry({ ...first, id: "q2", content: [text("Follow-up")], updatedAt: first.updatedAt + 1 })];
+    await eventually(() => f.entries[0].content.length === 2);
+    expect((await f.runs())[0].members?.map(m => m.fileGateway)).toEqual([false, false]);
+    expect(f.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(2);
+    expect(JSON.stringify(f.harness.inspection.sdk.callsTo("threads.send"))).toContain('Do not read external files');
+  });
+});
+
+
+it("inherits each parent message's permission mode without widening manual approvals", async () => {
+  for (const mode of ["full", "accept-edits"] as const) {
+    const f = await setup(); f.entries[0].permissionMode = mode; f.start();
+    await eventually(() => f.entries[0].content.length === 2);
+    const calls = JSON.stringify(f.harness.inspection.sdk.callsTo("threads.spawn"));
+    expect(calls).toContain(`"permissionMode":"${mode}"`);
+    expect(calls).not.toContain(`"permissionMode":"${mode === "full" ? "accept-edits" : "full"}"`);
+  }
+});
