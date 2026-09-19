@@ -1,8 +1,8 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 
-/** Composer chip: MoA toggles the mode; the up-chevron opens settings. One visual control, two hit targets. */
+/** One composer chip: hover/press as a block. Label toggles MoA; chevron opens settings. */
 export function MoAComposerToggle({
   pressed, disabled, title, menuLabel, onToggle, onOpenMenu, menuFailed, trailing, open,
 }: {
@@ -16,39 +16,43 @@ export function MoAComposerToggle({
   trailing?: ReactNode;
   open?: boolean;
 }) {
+  const openMenu = (e: { preventDefault(): void; stopPropagation(): void }) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!disabled) onOpenMenu();
+  };
+  const onMenuKey = (e: KeyboardEvent) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    openMenu(e);
+  };
   return (
-    <span title={title} className="inline-flex items-stretch">
-      <Button
-        type="button"
-        variant="ghost"
-        aria-pressed={pressed}
-        aria-label="MoA"
-        disabled={disabled}
-        className="h-7 gap-0.5 rounded-r-none px-1.5 pr-0 text-xs"
-        onClick={() => onToggle(!pressed)}
-      >
-        {pressed ? <Icon name="Check" className="size-3.5" /> : null}
-        <span>MoA</span>
-        {trailing}
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        disabled={disabled}
+    <span title={title} className="inline-flex">
+    <Button
+      type="button"
+      variant="ghost"
+      aria-pressed={pressed}
+      aria-label="MoA"
+      disabled={disabled}
+      className="h-7 gap-0.5 px-1.5 text-xs"
+      onClick={() => onToggle(!pressed)}
+    >
+      {pressed ? <Icon name="Check" className="size-3.5" /> : null}
+      <span>MoA</span>
+      {trailing}
+      <span
+        role="button"
+        tabIndex={disabled ? -1 : 0}
         aria-label={menuLabel}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className={`h-7 min-w-0 w-auto justify-center rounded-l-none px-0.5 touch-manipulation active:scale-95 ${menuFailed ? "text-destructive" : "text-muted-foreground hover:text-foreground"}`}
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onOpenMenu();
-        }}
+        aria-disabled={disabled || undefined}
+        className={`inline-flex touch-manipulation ${menuFailed ? "text-destructive" : "text-muted-foreground"}`}
+        onClick={openMenu}
+        onKeyDown={onMenuKey}
       >
-        <span className="inline-flex">
-          <Icon name={menuFailed ? "AlertCircle" : "ChevronUp"} className="size-4 pointer-events-none" />
-        </span>
-      </Button>
+        <Icon name={menuFailed ? "AlertCircle" : "ChevronUp"} className="size-4 pointer-events-none" />
+      </span>
+    </Button>
     </span>
   );
 }
