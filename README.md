@@ -19,7 +19,7 @@
 
 Both selected participants run even when the main chat uses one of their models. Each has a separate persistent session. MoA does not select native agents/profiles or add CLI Agents selection markers; legacy profile settings are ignored.
 
-Desktop uses BB's action slot before voice/send; compact composers get a control above the input. English/Russian copy follows browser language. MoA is off until a pair is configured and explicitly enabled in that chat.
+The MoA chip lives in BB's composer action row (before voice/send). It is not duplicated above a collapsed phone composer. English/Russian copy follows browser language. MoA is off until a pair is configured and explicitly enabled in that chat.
 
 Hover a user message delivered through MoA and click its Workflow icon to open the consultation modal. The **This message** tab shows the user request, actual advisor input, advisor answer and confirmed acting-model input. Separate **Session A/B** tabs embed the native BB transcripts without a composer. Existing settings history also links to this modal, with retries for failures. Workers are hidden from the sidebar; their runtime is stopped after each consultation and their history retained.
 

@@ -8,6 +8,7 @@ import { Icon } from "@/components/ui/icon";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { FallbackSettings, invalidFallback } from "./fallback";
 import { NewChatMoA } from "./new-chat";
+import { MoAComposerToggle } from "./composer-toggle";
 import { observeDraft } from "./draft";
 import { HistoryOverlay, HISTORY_TITLE, showAudit, openMessageAudit, mountHistoryVisibility } from "./history";
 
@@ -72,7 +73,7 @@ export function MoAControl() {
       if (currentThread.current === threadId) setState(next);
     } catch (cause) { if (currentThread.current === threadId) report(cause); }
   }, [threadId, rpc, report]);
-  useEffect(() => { setState(null); setOpen(false); setError(null); void refresh(); }, [refresh]);
+  useEffect(() => { setState(null); setOpen(false); setError(null); void refresh(); }, [threadId]);
   useEffect(() => { if (connection === "connected") void refresh(); }, [connection, refresh]);
   useRealtime("changed", payload => {
     if (payload && typeof payload === "object" && (("global" in payload && payload.global) || ("threadId" in payload && payload.threadId === threadId))) void refresh();
@@ -100,18 +101,21 @@ export function MoAControl() {
   if (!threadId) return null;
   const latest = state?.runs[0];
   const consulting = state?.config?.enabled && (latest?.status === "running" || latest?.status === "waiting");
-  return <div className="flex items-center gap-1">
-    <label className="flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1.5 text-xs" title={t("Consult both participants before every message", "Совет двух участников перед каждым сообщением")}>
-      <Checkbox aria-label="MoA" className="size-3 [&_svg]:size-2.5" checked={state?.config?.enabled ?? false} disabled={!state || busy}
-        onCheckedChange={checked => void toggle(checked === true)} />
-      <span>MoA</span>
-      {consulting && <Icon name="Spinner" className="size-3 animate-spin" />}
-      {consulting && latest?.progress?.overdue && <span className="text-muted-foreground" title={t("Long consultation: open settings for the advisor's state and history", "Долгая консультация: состояние и история советника доступны в настройках")}>{t("Waiting", "Ожидаем")}</span>}
-    </label>
-    <Button type="button" variant="ghost" size="icon" className="size-7" disabled={!state}
-      aria-label={t("MoA settings and history", "Настройки и история MoA")} onClick={() => settings()}>
-      <Icon name={latest?.status === "failed" ? "AlertCircle" : "Settings"} className="size-3.5" />
-    </Button>
+  return <div className="flex items-center">
+    <MoAComposerToggle
+      pressed={state?.config?.enabled ?? false}
+      disabled={!state || busy}
+      title={t("Consult both participants before every message", "Совет двух участников перед каждым сообщением")}
+      menuLabel={t("MoA settings and history", "Настройки и история MoA")}
+      onToggle={enabled => void toggle(enabled)}
+      onOpenMenu={() => settings()}
+      menuFailed={latest?.status === "failed"}
+      open={open}
+      trailing={<>
+        {consulting && <Icon name="Spinner" className="size-3 animate-spin" />}
+        {consulting && latest?.progress?.overdue && <span className="text-muted-foreground" title={t("Long consultation: open settings for the advisor's state and history", "Долгая консультация: состояние и история советника доступны в настройках")}>{t("Waiting", "Ожидаем")}</span>}
+      </>}
+    />
     {error && !open && <span role="alert" className="max-w-48 truncate text-xs text-destructive" title={error}>{error}</span>}
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
@@ -166,13 +170,9 @@ export default definePluginApp(app => {
     return () => style.remove();
   } });
   app.composer.customize({ id: "moa", scopes: ["thread", "new-thread"], actions: [{ id: "toggle", component: ComposerMoA }],
-    banners: [{ id: "compact-toggle", chrome: "bare", component: CompactControl }], richText: { onDraftChange: observeDraft } });
+    richText: { onDraftChange: observeDraft } });
 });
 function ComposerMoA() {
   const view = useComposerView();
   return view.scope.kind === "new-thread" ? <NewChatMoA /> : <MoAControl />;
-}
-function CompactControl() {
-  const { layout } = useComposerView();
-  return layout === "compact" ? <ComposerMoA /> : null;
 }

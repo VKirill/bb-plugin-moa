@@ -27,21 +27,21 @@ async function mount(fail = false) {
     },
   });
   cleanups.push(() => slot.lifecycle.unmount());
-  const checkbox = await slot.findByRole("checkbox", { name: "MoA" });
-  await waitFor(() => expect(checkbox.getAttribute("disabled")).toBeNull());
-  return { slot, checkbox };
+  const toggle = await slot.findByRole("button", { name: "MoA" });
+  await waitFor(() => expect(toggle.getAttribute("disabled")).toBeNull());
+  return { slot, toggle };
 }
-it("persists the checkbox through RPC for the current chat", async () => {
-  const { slot, checkbox } = await mount();
-  fireEvent.click(checkbox);
-  await waitFor(() => expect(checkbox.getAttribute("aria-checked")).toBe("true"));
+it("persists the composer toggle through RPC for the current chat", async () => {
+  const { slot, toggle } = await mount();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
   expect(slot.inspection.rpcCalls).toContainEqual(expect.objectContaining({ method: "toggle", input: { threadId: "parent", enabled: true } }));
 });
 it("keeps MoA off and shows an error when enabling fails", async () => {
-  const { slot, checkbox } = await mount(true);
-  fireEvent.click(checkbox);
+  const { slot, toggle } = await mount(true);
+  fireEvent.click(toggle);
   await slot.findByRole("alert");
-  expect(checkbox.getAttribute("aria-checked")).toBe("false");
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
 });
 it("offers MoA in a new chat and carries its selection with the draft", async () => {
   const app = await loadPluginApp(() => import("../app"));
@@ -54,7 +54,7 @@ it("offers MoA in a new chat and carries its selection with the draft", async ()
     },
   });
   cleanups.push(() => slot.lifecycle.unmount());
-  fireEvent.click(await slot.findByRole("checkbox", { name: "MoA" }));
+  fireEvent.click(await slot.findByRole("button", { name: "MoA" }));
   const enable = await slot.findByRole("button", { name: "Enable for this chat" });
   fireEvent.click(enable);
   await waitFor(() => expect(slot.inspection.composer.mentions).toContainEqual({
@@ -114,6 +114,17 @@ it("decodes legacy and multi-participant payloads for readable Markdown", async 
   expect(formatted).not.toContain('\\n');
 });
 
+it("keeps MoA in the action row instead of a compact banner above the composer", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  expect(app.composerCustomizations[0].banners ?? []).toEqual([]);
+});
+
+it("opens settings from the composer chevron without enabling MoA", async () => {
+  const { slot, toggle } = await mount();
+  fireEvent.click(await slot.findByRole("button", { name: "MoA settings and history" }));
+  await slot.findByRole("dialog", { name: "Mixture of Agents" });
+  expect(toggle.getAttribute("aria-pressed")).toBe("false");
+});
 it("saves fallback from the existing MoA settings dialog", async () => {
   const app = await loadPluginApp(() => import("../app"));
   let saved = config;

@@ -4,8 +4,7 @@ import type { Config, rpcContract } from "./contract";
 import { FallbackSettings, invalidFallback } from "./fallback";
 import { getDraft, subscribeDraft, moaMentions, removeMoa } from "./draft";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Icon } from "@/components/ui/icon";
+import { MoAComposerToggle } from "./composer-toggle";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 const ru = typeof navigator !== "undefined" && navigator.languages.some(l => l.startsWith("ru"));
 const t = (en: string, russian: string) => ru ? russian : en;
@@ -70,14 +69,16 @@ export function NewChatMoA() {
     try { remove(); } catch (cause) { setError((cause as Error).message); }
   }
   const same = config && config.a.providerId === config.b.providerId && config.a.model === config.b.model;
-  return <div className="flex items-center gap-1">
-    <label className="flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1.5 text-xs" title={t("Use MoA starting with the first message", "MoA с первого сообщения")}>
-      <Checkbox aria-label="MoA" className="size-3 [&_svg]:size-2.5" checked={!!token}
-        disabled={!projectId || busy || view.run.isSubmitting} onCheckedChange={value => toggle(value === true)} />
-      <span>MoA</span>
-    </label>
-    <Button type="button" variant="ghost" size="icon" className="size-7" aria-label={t("MoA settings", "Настройки MoA")}
-      disabled={!projectId || busy || view.run.isSubmitting} onClick={() => setOpen(true)}><Icon name="Settings" className="size-3.5" /></Button>
+  return <div className="flex items-center">
+    <MoAComposerToggle
+      pressed={!!token}
+      disabled={!projectId || busy || view.run.isSubmitting}
+      title={t("Use MoA starting with the first message", "MoA с первого сообщения")}
+      menuLabel={t("MoA settings", "Настройки MoA")}
+      onToggle={toggle}
+      onOpenMenu={() => setOpen(true)}
+      open={open}
+    />
     {error && !open && <span role="alert" className="max-w-48 truncate text-xs text-destructive" title={error}>{error}</span>}
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
