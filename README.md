@@ -7,19 +7,19 @@
 
 > Two independent AI models analyze each message in parallel. Your current chat model receives both answers, evaluates them, and performs the task with greater precision. MoA adds a compact per-chat toggle, shared model settings, configurable fallback, and per-message consultation history.
 
-**Status:** 0.1.0-beta.6 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
+**Status:** 0.1.0-beta.8 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
 
 ## Use
 
 1. Open a new or existing chat.
-2. Click the settings button next to **MoA** in the composer.
+2. Click the **MoA** chip in the composer (the whole chip opens settings, like the model picker).
 3. Choose two different provider/model combinations, A and B. BB's picker also selects reasoning and supported service tier.
 4. Save and enable MoA. Models, fallback and the long-wait notice threshold are shared across all chats and projects; the checkbox stays local to each chat. In a new chat, the first-message selection is carried in hidden draft metadata; the checkbox is the visible control. Each normal submission waits for both participants before the original request and private reference context reach your current agent.
 5. Uncheck MoA to resume ordinary delivery. Re-enabling continues saved advisor history and supplies intervening conversation updates.
 
 Both selected participants run even when the main chat uses one of their models. Each has a separate persistent session. MoA does not select native agents/profiles or add CLI Agents selection markers; legacy profile settings are ignored.
 
-The MoA chip lives in BB's composer action row (before voice/send). It is not duplicated above a collapsed phone composer. English/Russian copy follows browser language. MoA is off until a pair is configured and explicitly enabled in that chat.
+The MoA chip lives in BB's composer action row (before voice/send). It is not duplicated above a collapsed phone composer. English/Russian copy follows the BB interface language, or a one-click Auto / English / Русский override in plugin settings. MoA is off until a pair is configured and explicitly enabled in that chat.
 
 Hover a user message delivered through MoA and click its Workflow icon to open the consultation modal. The **This message** tab shows the user request, actual advisor input, advisor answer and confirmed acting-model input. Separate **Session A/B** tabs embed the native BB transcripts without a composer. Existing settings history also links to this modal, with retries for failures. Workers are hidden from the sidebar; their runtime is stopped after each consultation and their history retained.
 

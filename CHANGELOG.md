@@ -1,3 +1,8 @@
+# 0.1.0-beta.8
+
+- Open MoA settings from the whole composer chip through the same overlay trigger as BB's model picker, so the first click is not swallowed by a nested button or a disabled loading state.
+- Add English/Russian UI with Auto / English / Русский in plugin settings.
+
 # 0.1.0-beta.6
 
 - Allow advisors to inspect relevant local files and use the optional File Gateway for external reads.

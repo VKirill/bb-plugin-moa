@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-moa",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "type": "module",
   "engines": {
     "bb": ">=0.43.1 <0.44",
@@ -103,7 +103,9 @@
     "audit.ts",
     "history.tsx",
     "fallback.tsx",
-    "file-access.ts"
+    "file-access.ts",
+    "i18n.ts",
+    "settings.tsx"
   ],
   "repository": {
     "type": "git",
