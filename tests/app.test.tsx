@@ -130,6 +130,7 @@ it("keeps MoA in the action row instead of a compact banner above the composer",
 
 it("opens settings from the composer chip without enabling MoA", async () => {
   const { slot, toggle } = await mount();
+  expect(toggle.getAttribute("aria-haspopup")).toBe("dialog");
   fireEvent.click(toggle);
   await slot.findByRole("dialog", { name: "Mixture of Agents" });
   expect(toggle.getAttribute("aria-pressed")).toBe("false");

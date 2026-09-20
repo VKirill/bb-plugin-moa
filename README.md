@@ -7,12 +7,12 @@
 
 > Two independent AI models analyze each message in parallel. Your current chat model receives both answers, evaluates them, and performs the task with greater precision. MoA adds a compact per-chat toggle, shared model settings, configurable fallback, and per-message consultation history.
 
-**Status:** 0.1.0-beta.8 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
+**Status:** 0.1.0-beta.9 · experimental. **License:** MIT. **Requires:** BB 0.43.1 and Plugin SDK 0.4.87. Uses public plugin APIs: no BB core patches, private imports, separate API keys or global CLI configuration changes.
 
 ## Use
 
 1. Open a new or existing chat.
-2. Click the **MoA** chip in the composer (the whole chip opens settings, like the model picker).
+2. Click the **MoA** chip in the composer. The whole chip opens the settings sheet immediately, including on a phone and in an empty chat — the same trigger as Agency.
 3. Choose two different provider/model combinations, A and B. BB's picker also selects reasoning and supported service tier.
 4. Save and enable MoA. Models, fallback and the long-wait notice threshold are shared across all chats and projects; the checkbox stays local to each chat. In a new chat, the first-message selection is carried in hidden draft metadata; the checkbox is the visible control. Each normal submission waits for both participants before the original request and private reference context reach your current agent.
 5. Uncheck MoA to resume ordinary delivery. Re-enabling continues saved advisor history and supplies intervening conversation updates.

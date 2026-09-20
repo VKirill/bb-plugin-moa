@@ -1,3 +1,7 @@
+# 0.1.0-beta.9
+
+- Open the MoA settings sheet through BB's `DialogTrigger` / `MobileTrigger`, the same path Agency uses: on a phone the keyboard is blurred on click, not mousedown, so the first tap is not lost in an empty chat.
+
 # 0.1.0-beta.8
 
 - Open MoA settings from the whole composer chip through the same overlay trigger as BB's model picker, so the first click is not swallowed by a nested button or a disabled loading state.

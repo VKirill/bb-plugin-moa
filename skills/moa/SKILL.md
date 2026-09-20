@@ -7,7 +7,7 @@ description: Inspect or configure the Mixture of Agents plugin in BB: shared mod
 
 Use `bb moa status THREAD_ID --json` to inspect the pair and recent consultations.
 `bb moa on THREAD_ID` and `bb moa off THREAD_ID` control the current chat's mode.
-Models, fallback and the long-wait notice threshold are shared across all chats/projects. Enabling remains per-chat. Configure participants by clicking the MoA chip in the chat composer. The whole chip opens settings. The CLI alternative is `bb moa configure THREAD_ID CONFIG_JSON`, with `a`, `b`, `enabled`, and `timeoutSeconds`. Each participant has `providerId`, `model`, `reasoningLevel`, and optional `serviceTier`. Legacy `agentId` values are ignored; MoA never inserts CLI Agents selection markers.
+Models, fallback and the long-wait notice threshold are shared across all chats/projects. Enabling remains per-chat. Configure participants by clicking the MoA chip in the chat composer. The chip opens the settings sheet immediately, including on a phone. The CLI alternative is `bb moa configure THREAD_ID CONFIG_JSON`, with `a`, `b`, `enabled`, and `timeoutSeconds`. Each participant has `providerId`, `model`, `reasoningLevel`, and optional `serviceTier`. Legacy `agentId` values are ignored; MoA never inserts CLI Agents selection markers.
 
 Both A and B independently advise in parallel. The current chat model receives both answers and acts. Never call MoA from its own advisor session. Do not manually start extra advisors: the dispatch gate owns consultations.
 

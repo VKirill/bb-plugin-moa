@@ -5,7 +5,7 @@ import type { Config, RunView, Slot, rpcContract } from "./contract";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Icon } from "@/components/ui/icon";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { FallbackSettings, invalidFallback } from "./fallback";
 import { NewChatMoA } from "./new-chat";
 import { MoAComposerToggle } from "./composer-toggle";
@@ -108,17 +108,17 @@ export function MoAControl() {
   return <div className="flex items-center">
     <span title={t("chipTitle")} className="inline-flex">
       <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogTrigger asChild>
           <MoAComposerToggle
             pressed={state?.config?.enabled ?? false}
             menuLabel={t("chipMenu")}
             menuFailed={latest?.status === "failed"}
-            open={open}
-            onOpenMenu={() => onOpenChange(true)}
             trailing={<>
               {consulting && <Icon name="Spinner" className="size-3 animate-spin" />}
               {consulting && latest?.progress?.overdue && <span className="text-muted-foreground" title={t("longWaitChipTitle")}>{t("longWaitChip")}</span>}
             </>}
           />
+        </DialogTrigger>
         <DialogContent
           className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"
           onOpenAutoFocus={event => event.preventDefault()}

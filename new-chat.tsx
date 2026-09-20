@@ -5,7 +5,7 @@ import { FallbackSettings, invalidFallback } from "./fallback";
 import { getDraft, subscribeDraft, moaMentions, removeMoa } from "./draft";
 import { Button } from "@/components/ui/button";
 import { MoAComposerToggle } from "./composer-toggle";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { t, useLocale } from "./i18n";
 
 export function NewChatMoA() {
@@ -42,7 +42,13 @@ export function NewChatMoA() {
     })();
     return () => { live = false; };
   }, [projectId, token, rpc, sharedRevision, connection]);
-  useEffect(() => { setOpen(false); }, [projectId]);
+  const previousProject = useRef(projectId);
+  useEffect(() => {
+    if (previousProject.current !== projectId) {
+      if (previousProject.current != null) setOpen(false);
+      previousProject.current = projectId;
+    }
+  }, [projectId]);
   function remove() {
     composer.updateText(text => removeMoa(text, getDraft().draft));
   }
@@ -65,13 +71,13 @@ export function NewChatMoA() {
   return <div className="flex items-center">
     <span title={t("chipTitleNew")} className="inline-flex">
       <Dialog open={open} onOpenChange={next => { setOpen(next); setError(null); }}>
+        <DialogTrigger asChild>
           <MoAComposerToggle
             pressed={!!token}
             disabled={!projectId || view.run.isSubmitting}
             menuLabel={t("chipMenuNew")}
-            open={open}
-            onOpenMenu={() => { setOpen(true); setError(null); }}
           />
+        </DialogTrigger>
         <DialogContent
           className="max-h-[85vh] overflow-y-auto sm:max-w-2xl"
           onOpenAutoFocus={event => event.preventDefault()}
